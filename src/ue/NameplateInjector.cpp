@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace AlphaRing::UE::NameplateInjector {
@@ -25,9 +26,22 @@ namespace AlphaRing::UE::NameplateInjector {
         constexpr uintptr_t kGameInstance_LocalPlayers = 0x0038;
         constexpr uintptr_t kUPlayer_PlayerController  = 0x0030;
         constexpr uintptr_t kSDUserWidget_ViewModel    = 0x02D8;
+        constexpr uintptr_t kNPWidget_OverlayVM        = 0x0378; // MCCNameplateOverlayWidget.NameplateOverlayViewModel
         constexpr uintptr_t kNPOVM_OwnPlayerViewModel  = 0x01C8; // MCCNameplateOverlayViewModel.OwnPlayerViewModel
         constexpr uintptr_t kConfigTextBlock_PropName  = 0x0280; // SDConfigurableTextBlock.ConfigPropertyName (FName)
         constexpr uintptr_t kSessionVM_PlayerNameValue = 0x00C8; // MCCSessionPlayerViewModel.PlayerName(0x78).Value(0x50)
+
+        // Visual-parity layouts (UMG / MCC SDK):
+        constexpr uintptr_t kWidget_RenderOpacity      = 0x011C; // UWidget.RenderOpacity (float)
+        constexpr uintptr_t kNameplate_RosterButtonIcon= 0x0388; // WBP_Nameplate_C.RosterButtonIcon (UImage*)
+        constexpr uintptr_t kNPWidget_RosterButton     = 0x0358; // MCCNameplateOverlayWidget.RosterButton (USDTile*)
+        constexpr uintptr_t kNPWidget_RosterInputPanel = 0x0360; // MCCNameplateOverlayWidget.RosterInputPanel (UPanelWidget*)
+        constexpr uintptr_t kImage_Brush               = 0x0160; // UImage.Brush (FSlateBrush, 0x88)
+        constexpr uintptr_t kImage_ColorAndOpacity     = 0x01F8; // UImage.ColorAndOpacity (FLinearColor) — the tint
+        constexpr uintptr_t kBrush_ResourceObject      = 0x0048; // FSlateBrush.ResourceObject (UObject*)
+        constexpr uintptr_t kDynImage_ImageUri         = 0x0260; // MCCDynamicImage.ImageUri (FString)
+        constexpr uintptr_t kDynImage_LoadedTexture    = 0x0298; // MCCDynamicImage.LoadedTexture (UTexture2D*)
+        constexpr uintptr_t kEmblemWidget_ViewModel    = 0x0328; // MCCEmblemWidget.EmblemViewModel
 
         constexpr __int64 kProcessEventRVA = 0x00E8E7D8;
         void (__fastcall* g_orig_process_event)(void*, void*, void*) = nullptr;
@@ -45,6 +59,10 @@ namespace AlphaRing::UE::NameplateInjector {
         struct ToStrParams { FTextBlob in; FStringView ret; };          // text -> string
         struct SetTextParams { FTextBlob text; };
         struct GetTextParams { FTextBlob ret; };                        // TextBlock.GetText()
+        struct FBrushBlob { uint8_t bytes[0x88]; };                     // FSlateBrush (UE 4.21)
+        struct SetBrushParams { FBrushBlob brush; };                    // Image.SetBrush(FSlateBrush)
+        struct FLinColor { float r, g, b, a; };                         // FLinearColor
+        struct SetColorParams { FLinColor color; };                     // Image.SetColorAndOpacity
 
         // UTextBlock::Text FText lives at +0x180 (UMG SDK).
         constexpr uintptr_t kTextBlock_Text = 0x0180;
@@ -70,6 +88,11 @@ namespace AlphaRing::UE::NameplateInjector {
         void* c_convFn      = nullptr; // KismetTextLibrary.Conv_StringToText(FString)->FText
         void* c_toStrFn     = nullptr; // KismetTextLibrary.Conv_TextToString(FText)->FString
         void* c_getTextFn   = nullptr; // TextBlock.GetText()->FText (live Slate text)
+        void* c_setOpacityFn= nullptr; // Widget.SetRenderOpacity(float)
+        void* c_setBrushFn  = nullptr; // Image.SetBrush(FSlateBrush)
+        void* c_setColorFn  = nullptr; // Image.SetColorAndOpacity(FLinearColor)
+        void* c_emblemRefreshFn = nullptr; // MCCEmblemWidget.RefreshTextures()
+        void* c_setImageUriFn = nullptr;   // MCCDynamicImage.SetImageUri(FString)
 
         // spawned nameplate per row (1..3); g_vis caches visibility to avoid
         // redundant ProcessEvent calls each tick.
@@ -85,6 +108,8 @@ namespace AlphaRing::UE::NameplateInjector {
 
         // Cached primary-player gamertag (read from MCC's own nameplate).
         std::wstring g_gamertag;
+        // Cached blue-bar image URI read off P1's "Nameplate" MCCDynamicImage.
+        std::wstring g_plate_uri;
 
         // Per-controller "A held since" timestamp for hold-to-join (0 = not held).
         unsigned long long g_a_hold[4] = {};
@@ -114,6 +139,11 @@ namespace AlphaRing::UE::NameplateInjector {
             c_convFn      = FindFunction("KismetTextLibrary", "Conv_StringToText").ptr();
             c_toStrFn     = FindFunction("KismetTextLibrary", "Conv_TextToString").ptr();
             c_getTextFn   = FindFunction("TextBlock", "GetText").ptr();
+            c_setOpacityFn= FindFunction("Widget", "SetRenderOpacity").ptr();
+            c_setBrushFn  = FindFunction("Image", "SetBrush").ptr();
+            c_setColorFn  = FindFunction("Image", "SetColorAndOpacity").ptr();
+            c_emblemRefreshFn = FindFunction("MCCEmblemWidget", "RefreshTextures").ptr();
+            c_setImageUriFn = FindFunction("MCCDynamicImage", "SetImageUri").ptr();
             g_resolved = c_widgetClass && c_createFn && c_wblCDO && c_addFn;
             if (g_resolved) {
                 char b[160];
@@ -159,6 +189,34 @@ namespace AlphaRing::UE::NameplateInjector {
                 if (!ours) return o;
             }
             return {};
+        }
+
+        // The LIVE, data-populated P1 nameplate — NOT the empty "WidgetArchetype"
+        // template (which has every image/emblem null and was the source of our
+        // all-null probes). The live one has a real NameplateOverlayViewModel
+        // whose OwnPlayerViewModel is set; the archetype/CDO don't. Falls back to
+        // any non-template instance if none looks fully populated yet.
+        Object FindPopulatedNameplate() {
+            auto objs = GObjects();
+            if (!objs) return {};
+            const int32_t n = objs->num();
+            Object fallback;
+            for (int32_t i = 0; i < n; ++i) {
+                auto o = objs->get(i);
+                if (!o.valid()) continue;
+                if (ClassNameOf(o) != "WBP_Nameplate_C") continue;
+                auto on = ObjectNameOf(o);
+                if (on.rfind("Default__", 0) == 0) continue;          // CDO
+                if (on.find("WidgetArchetype") != std::string::npos) continue; // template
+                bool ours = false;
+                for (int s = 1; s < 4; ++s) if (g_widgets[s] == o.ptr()) { ours = true; break; }
+                if (ours) continue;
+                Object vm(o.read<void*>(kNPWidget_OverlayVM));
+                if (vm.valid() && Object(vm.read<void*>(kNPOVM_OwnPlayerViewModel)).valid())
+                    return o; // live + populated
+                if (!fallback.valid()) fallback = o;
+            }
+            return fallback;
         }
 
         // The LIVE displayed string of a UTextBlock-derived widget. We call the
@@ -337,6 +395,227 @@ namespace AlphaRing::UE::NameplateInjector {
             ProcessEvent(Object(block), Object(c_setTextFn), &p);
         }
 
+        bool IsWidgetClass(const std::string& cn) {
+            static const char* kHints[] = {
+                "Image", "Text", "Block", "Tile", "Border", "Button", "Box",
+                "Panel", "Widget", "Overlay", "Canvas", "Icon", "Bar", "Scale",
+            };
+            for (auto h : kHints) if (cn.find(h) != std::string::npos) return true;
+            return false;
+        }
+
+        bool IsImageClass(const std::string& cn) {
+            return cn == "Image" || cn == "MCCDynamicImage" || cn == "MCCUUIImage";
+        }
+
+        // The clone is structurally identical to P1 (verified via DumpTree) — all
+        // widgets present at full opacity — but its image brushes are empty
+        // because the per-player data binding never loaded the textures. So we
+        // copy each populated FSlateBrush from P1's image widgets onto the
+        // clone's same-named images (the blue "Nameplate" bar, the emblem
+        // images, the rank icons). Pure memory read + SetBrush (a UImage method,
+        // safe on all three UImage-derived classes) — NO game-data functions
+        // (RefreshTextures / OnContextChanged re-drives faulted uncatchably).
+        // Runs every tick so async-loaded textures get picked up; SetBrush only
+        // fires when the source texture differs from what the clone already has.
+        void MirrorBrushes(Object real) {
+            if (!c_setBrushFn || !real.valid()) return;
+            auto objs = GObjects();
+            if (!objs) return;
+            const int32_t n = objs->num();
+
+            // One O(n) pass: collect P1's images (name->object) and every clone's
+            // images (object + name). Both sets are tiny (~8 each).
+            std::vector<std::pair<std::string, void*>> src; // P1 name -> image obj
+            std::vector<std::pair<std::string, void*>> dst; // clone image objs
+            for (int32_t i = 0; i < n; ++i) {
+                auto o = objs->get(i);
+                if (!o.valid()) continue;
+                if (!IsImageClass(ClassNameOf(o))) continue;
+                if (HasAncestor(o, real.ptr(), 16)) {
+                    src.push_back({ ObjectNameOf(o), o.ptr() });
+                    continue;
+                }
+                for (int s = 1; s < 4; ++s) {
+                    if (g_widgets[s] && HasAncestor(o, g_widgets[s], 16)) {
+                        dst.push_back({ ObjectNameOf(o), o.ptr() });
+                        break;
+                    }
+                }
+            }
+            for (auto& d : dst) {
+                for (auto& s : src) {
+                    if (s.first != d.first) continue;
+                    // Copy when the brushes differ at all — not only when the
+                    // source has a texture. P1's blue bar is a TEXTURELESS color
+                    // brush (ResourceObject null, blue TintColor), so a
+                    // resource-only check skipped it; a full-brush compare
+                    // carries the tint across too.
+                    FBrushBlob sb = Object(s.second).read<FBrushBlob>(kImage_Brush);
+                    FBrushBlob db = Object(d.second).read<FBrushBlob>(kImage_Brush);
+                    if (std::memcmp(&sb, &db, sizeof(FBrushBlob)) != 0) {
+                        SetBrushParams p{};
+                        p.brush = sb;
+                        ProcessEvent(Object(d.second), Object(c_setBrushFn), &p);
+                    }
+                    // Mirror the tint (UImage.ColorAndOpacity) too — the blue
+                    // nameplate bar is a greyscale base texture tinted blue via
+                    // this field, NOT the brush, so SetBrush alone left it grey.
+                    if (c_setColorFn) {
+                        FLinColor sc = Object(s.second).read<FLinColor>(kImage_ColorAndOpacity);
+                        FLinColor dc = Object(d.second).read<FLinColor>(kImage_ColorAndOpacity);
+                        if (std::memcmp(&sc, &dc, sizeof(FLinColor)) != 0) {
+                            SetColorParams p{};
+                            p.color = sc;
+                            ProcessEvent(Object(d.second), Object(c_setColorFn), &p);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // One-shot structural diff: log every widget descendant of P1's real
+        // nameplate and of a clone (name, class, RenderOpacity, and image brush
+        // resource), so any remaining visual delta is pinpointable from the log
+        // without another game run.
+        void DumpTree(Object root, const char* tag) {
+            auto objs = GObjects();
+            if (!objs || !root.valid()) return;
+            const int32_t n = objs->num();
+            int count = 0;
+            Log(std::string("=== tree dump [") + tag + "] root=" +
+                ObjectNameOf(root) + " (" + ClassNameOf(root) + ") ===");
+            for (int32_t i = 0; i < n; ++i) {
+                auto o = objs->get(i);
+                if (!o.valid()) continue;
+                auto cn = ClassNameOf(o);
+                if (!IsWidgetClass(cn)) continue;
+                // Slots / WidgetTree aren't UWidgets — reading RenderOpacity at
+                // 0x11C on them is out-of-bounds garbage; skip.
+                if (cn.find("Slot") != std::string::npos ||
+                    cn.find("Tree") != std::string::npos) continue;
+                if (!HasAncestor(o, root.ptr(), 16)) continue;
+                float op = o.read<float>(kWidget_RenderOpacity);
+                void* res = nullptr;
+                if (IsImageClass(cn))
+                    res = o.read<void*>(kImage_Brush + kBrush_ResourceObject);
+                char b[256];
+                snprintf(b, sizeof(b), "  [%s] %s : %s  opacity=%.2f%s",
+                         tag, ObjectNameOf(o).c_str(), cn.c_str(), op,
+                         res ? "  brush=SET" : (cn == "Image" ? "  brush=NULL" : ""));
+                Log(b);
+                if (++count > 64) { Log("  ... (truncated)"); break; }
+            }
+        }
+
+        // One-shot probe of P1's image widgets: log the ACTUAL texture source
+        // for each (brush ResourceObject + class, plus MCCDynamicImage's
+        // LoadedTexture + ImageUri, plus each emblem widget's ViewModel) so we
+        // can drive the right field. Also caches the blue-bar URI.
+        void ProbeImageSources(Object root, const char* tag) {
+            auto objs = GObjects();
+            if (!objs || !root.valid()) return;
+            const int32_t n = objs->num();
+            Log(std::string("=== image sources [") + tag + "] ===");
+            for (int32_t i = 0; i < n; ++i) {
+                auto o = objs->get(i);
+                if (!o.valid()) continue;
+                auto cn = ClassNameOf(o);
+                bool img = IsImageClass(cn);
+                bool emblem = (cn == "MCCEmblemWidget" || cn == "WBP_Emblem_C");
+                if (!img && !emblem) continue;
+                if (!HasAncestor(o, root.ptr(), 16)) continue;
+                auto on = ObjectNameOf(o);
+                if (emblem) {
+                    void* vm = o.read<void*>(kEmblemWidget_ViewModel);
+                    char b[200];
+                    snprintf(b, sizeof(b), "  [%s] EMBLEM %s vm=%p (%s)", tag, on.c_str(),
+                             vm, vm ? ClassNameOf(Object(vm)).c_str() : "null");
+                    Log(b);
+                    continue;
+                }
+                void* res = o.read<void*>(kImage_Brush + kBrush_ResourceObject);
+                std::string rc = res ? ClassNameOf(Object(res)) : "null";
+                std::string extra;
+                if (cn == "MCCDynamicImage") {
+                    void* lt = o.read<void*>(kDynImage_LoadedTexture);
+                    std::wstring uri = FStringToWide(o.read<FStringView>(kDynImage_ImageUri));
+                    char b[320];
+                    snprintf(b, sizeof(b), " loaded=%p(%s) uri='%s'", lt,
+                             lt ? ClassNameOf(Object(lt)).c_str() : "null", Utf8(uri).c_str());
+                    extra = b;
+                    if (on == "Nameplate" && !uri.empty()) g_plate_uri = uri;
+                }
+                char b[400];
+                snprintf(b, sizeof(b), "  [%s] %s : %s  brushRes=%p(%s)%s", tag,
+                         on.c_str(), cn.c_str(), res, rc.c_str(), extra.c_str());
+                Log(b);
+            }
+        }
+
+        // Drive the clone's blue-bar "Nameplate" MCCDynamicImage from P1's image
+        // URI (its texture comes from ImageUri/LoadedTexture, NOT the brush, so
+        // SetBrush can't reach it). Native loader = safe; only fires once per
+        // clone (when its uri differs).
+        void MirrorBlueBar(Object real) {
+            if (!c_setImageUriFn) return;
+            auto objs = GObjects();
+            if (!objs) return;
+            const int32_t n = objs->num();
+            // Resolve P1's blue-bar URI lazily (it may load after first spawn).
+            if (g_plate_uri.empty() && real.valid()) {
+                for (int32_t i = 0; i < n; ++i) {
+                    auto o = objs->get(i);
+                    if (!o.valid()) continue;
+                    if (ClassNameOf(o) != "MCCDynamicImage") continue;
+                    if (ObjectNameOf(o) != "Nameplate") continue;
+                    if (!HasAncestor(o, real.ptr(), 16)) continue;
+                    std::wstring uri = FStringToWide(o.read<FStringView>(kDynImage_ImageUri));
+                    if (!uri.empty()) { g_plate_uri = uri; }
+                    break;
+                }
+            }
+            if (g_plate_uri.empty()) return;
+            for (int32_t i = 0; i < n; ++i) {
+                auto o = objs->get(i);
+                if (!o.valid()) continue;
+                if (ClassNameOf(o) != "MCCDynamicImage") continue;
+                if (ObjectNameOf(o) != "Nameplate") continue;
+                bool ours = false;
+                for (int s = 1; s < 4; ++s)
+                    if (g_widgets[s] && HasAncestor(o, g_widgets[s], 16)) { ours = true; break; }
+                if (!ours) continue;
+                std::wstring cur = FStringToWide(o.read<FStringView>(kDynImage_ImageUri));
+                if (cur == g_plate_uri) continue;
+                static wchar_t buf[260];
+                int len = (int)g_plate_uri.size();
+                if (len > 258) len = 258;
+                wmemcpy(buf, g_plate_uri.c_str(), len);
+                buf[len] = 0;
+                FStringView sv{ buf, len + 1, len + 1 };
+                ProcessEvent(o, Object(c_setImageUriFn), &sv);
+                Log("blue-bar: SetImageUri applied to a clone");
+            }
+        }
+
+        // Surface the nameplate's native roster A-button glyph on the prompt
+        // plate (RosterButtonIcon / RosterButton / RosterInputPanel are the
+        // game's own "press A" prompt elements). show=false collapses them on
+        // joined plates.
+        void SetRosterGlyphVisible(int slot, bool show) {
+            void* w = g_widgets[slot];
+            if (!w || !c_visFn) return;
+            Object widget(w);
+            uint8_t vis = show ? 0 : 1; // Visible=0, Collapsed=1
+            for (uintptr_t off : { kNameplate_RosterButtonIcon,
+                                   kNPWidget_RosterButton,
+                                   kNPWidget_RosterInputPanel }) {
+                void* el = widget.read<void*>(off);
+                if (el) ProcessEvent(Object(el), Object(c_visFn), &vis);
+            }
+        }
+
         Object CreateNameplate(int slot) {
             Object gi = FindObjectByClass("BP_MCCGameInstance_C");
             if (!gi.valid()) return {};
@@ -360,10 +639,15 @@ namespace AlphaRing::UE::NameplateInjector {
             if (!widget.valid()) return {};
 
             *reinterpret_cast<void**>(widget.address() + kSDUserWidget_ViewModel) = context.ptr();
-            if (c_occFn) ProcessEvent(widget, Object(c_occFn), nullptr);
+            *reinterpret_cast<void**>(widget.address() + kNPWidget_OverlayVM) = context.ptr();
 
             AddToViewportParams ap{ 500 };
             ProcessEvent(widget, Object(c_addFn), &ap);
+
+            // Bind the context AFTER the Slate tree is constructed (post-add) so
+            // the emblem/background/rank bindings actually populate — binding
+            // before AddToViewport leaves the clone "ghosted" (text only).
+            if (c_occFn) ProcessEvent(widget, Object(c_occFn), nullptr);
 
             // Force-visible (the nameplate BP can default to collapsed until its
             // context drives it).
@@ -387,6 +671,32 @@ namespace AlphaRing::UE::NameplateInjector {
             ResolveBlocks(widget, slot);
             g_text[slot].clear();
             g_tag_vis[slot] = -1;
+
+            // One-shot structural diff (clone vs P1) on the first spawned plate.
+            static bool s_dumped = false;
+            if (!s_dumped) {
+                s_dumped = true;
+                // Enumerate EVERY WBP_Nameplate_C so we can see archetype vs the
+                // live instance (overlayVM + ownVM populated => the real P1).
+                auto objs = GObjects();
+                if (objs) {
+                    const int32_t n = objs->num();
+                    Log("=== all WBP_Nameplate_C instances ===");
+                    for (int32_t i = 0; i < n; ++i) {
+                        auto o = objs->get(i);
+                        if (!o.valid() || ClassNameOf(o) != "WBP_Nameplate_C") continue;
+                        Object vm(o.read<void*>(kNPWidget_OverlayVM));
+                        Object own = vm.valid() ? Object(vm.read<void*>(kNPOVM_OwnPlayerViewModel)) : Object();
+                        char b[200];
+                        snprintf(b, sizeof(b), "  nameplate '%s' ptr=%p overlayVM=%p ownVM=%p",
+                                 ObjectNameOf(o).c_str(), o.ptr(), vm.ptr(), own.ptr());
+                        Log(b);
+                    }
+                }
+                Object live = FindPopulatedNameplate();
+                if (live.valid()) { DumpTree(live, "P1"); ProbeImageSources(live, "P1live"); }
+                DumpTree(widget, "clone");
+            }
             return widget;
         }
 
@@ -400,8 +710,9 @@ namespace AlphaRing::UE::NameplateInjector {
         }
 
         // showTag=true keeps the native "[UNSC]" clan tag (joined players);
-        // false collapses it (the join prompt).
-        struct RowSpec { std::wstring name; bool showTag; };
+        // false collapses it (the join prompt). showGlyph surfaces the native
+        // roster A-button glyph (the join prompt) and hides it on joined plates.
+        struct RowSpec { std::wstring name; bool showTag; bool showGlyph; };
 
         void SetTagVisible(int slot, bool show) {
             if (g_tag_group[slot].empty() || !c_visFn) return;
@@ -418,6 +729,7 @@ namespace AlphaRing::UE::NameplateInjector {
         // text ("[UNSC]") — we only toggle its visibility.
         void Reconcile(const RowSpec* specs, int rows) {
             if (rows > 3) rows = 3;
+            bool anyActive = false;
             for (int slot = 1; slot <= 3; ++slot) {
                 int idx = slot - 1;
                 bool want = idx < rows;
@@ -429,13 +741,36 @@ namespace AlphaRing::UE::NameplateInjector {
                         SetRowVisible(slot, true);
                     }
                     if (!g_widgets[slot]) continue;
+                    anyActive = true;
+
                     if (specs[idx].name != g_text[slot]) {
                         SetBlockText(g_name_tb[slot], specs[idx].name);
                         g_text[slot] = specs[idx].name;
                     }
                     SetTagVisible(slot, specs[idx].showTag);
+                    SetRosterGlyphVisible(slot, specs[idx].showGlyph);
                 } else {
                     SetRowVisible(slot, false);
+                }
+            }
+            // Copy P1's populated visuals onto the clones so they render
+            // identically — brush images (rank/XP) via SetBrush, and the blue
+            // bar (MCCDynamicImage) via its native ImageUri loader. Runs each
+            // tick to pick up async-loaded textures.
+            if (anyActive) {
+                Object real = FindPopulatedNameplate();
+                MirrorBrushes(real);
+                MirrorBlueBar(real);
+                // Time-series probe of P1's image sources (~1s x 12) to catch
+                // async texture loads / find where the blue bar + emblem live.
+                static unsigned long long s_probe_last = 0;
+                static int s_probe_n = 0;
+                unsigned long long now = GetTickCount64();
+                if (real.valid() && s_probe_n < 12 && now - s_probe_last > 1000) {
+                    s_probe_last = now;
+                    char t[16];
+                    snprintf(t, sizeof(t), "P1#%d", s_probe_n++);
+                    ProbeImageSources(real, t);
                 }
             }
         }
@@ -532,13 +867,15 @@ namespace AlphaRing::UE::NameplateInjector {
             int rows = 0;
             for (int j = 1; j <= count - 1 && rows < 3; ++j) {          // joined extras
                 specs[rows].name = base + L"(" + std::to_wstring(j) + L")";
-                specs[rows].showTag = true; // keep native "[UNSC]" like the primary
+                specs[rows].showTag = true;   // keep native "[UNSC]" like the primary
+                specs[rows].showGlyph = false; // no roster prompt on a joined plate
                 ++rows;
             }
             int prompts = (connected_unjoined > 0 && count < 4 && rows < 3) ? 1 : 0;
             if (prompts) {
-                specs[rows].name = L"Press A to Join";
-                specs[rows].showTag = false; // no clan tag on the join prompt
+                specs[rows].name = L"Hold A to Join";
+                specs[rows].showTag = false;  // no clan tag on the join prompt
+                specs[rows].showGlyph = true; // surface the native Xbox A glyph
                 ++rows;
             }
             Reconcile(specs, rows);
