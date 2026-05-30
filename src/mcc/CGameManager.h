@@ -33,6 +33,9 @@
         static __int64 get_xuid(int index);
         static int get_index(__int64 xuid);
         static Profile_t* get_profile(int index);
+        // Real account display name (gamertag) for a slot, via the original
+        // get_xbox_user_id. Returns false if unavailable.
+        static bool get_name(int index, wchar_t* out, int count);
         static CInputDevice* get_controller(int index);
 
     private:

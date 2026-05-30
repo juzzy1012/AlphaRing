@@ -85,6 +85,28 @@ __int64 CGameManager::get_xuid(int index) {
         return pGameManager->ppOriginal.get_xbox_user_id(pGameManager, &result, nullptr, 0, index) ? result : 0;
 }
 
+bool CGameManager::get_name(int index, wchar_t* out, int count) {
+    if (!out || count <= 0 || index < 0 || index >= 4 || pGameManager == nullptr ||
+        pGameManager->ppOriginal.get_xbox_user_id == nullptr)
+        return false;
+    out[0] = 0;
+    __int64 id = 0;
+    // `count` is the buffer length in wchars. We pass it straight through as the
+    // size arg: whether the original treats it as a char count or a byte count,
+    // the most it can write (count wchars == count*2 bytes) still fits a
+    // wchar_t[count] buffer. SEH guards against any internal fault when called
+    // outside a normal in-game context (e.g. at the menu).
+    __try {
+        if (!pGameManager->ppOriginal.get_xbox_user_id(pGameManager, &id, out, count, index))
+            return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out[0] = 0;
+        return false;
+    }
+    out[count - 1] = 0;
+    return out[0] != 0;
+}
+
 CInputDevice *CGameManager::get_controller(int index) {
     auto mng = DeviceManager();
     auto setting = AlphaRing::Global::MCC::Splitscreen();
