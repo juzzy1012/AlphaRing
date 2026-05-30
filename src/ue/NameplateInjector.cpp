@@ -39,6 +39,7 @@ namespace AlphaRing::UE::NameplateInjector {
         constexpr uintptr_t kImage_ColorAndOpacity     = 0x01F8; // UImage.ColorAndOpacity (FLinearColor) — the tint
         constexpr uintptr_t kBrush_ResourceObject      = 0x0048; // FSlateBrush.ResourceObject (UObject*)
         constexpr uintptr_t kDynImage_ImageUri         = 0x0260; // MCCDynamicImage.ImageUri (FString)
+        constexpr uintptr_t kGSVM_Players              = 0x00E8; // MCCGameSessionViewModel.Players (TArray) — Num>=1 in a lobby
 
         constexpr __int64 kProcessEventRVA = 0x00E8E7D8;
         void (__fastcall* g_orig_process_event)(void*, void*, void*) = nullptr;
@@ -222,6 +223,29 @@ namespace AlphaRing::UE::NameplateInjector {
                 if (!fallback.valid()) fallback = o;
             }
             return fallback;
+        }
+
+        // True when a game-session LOBBY is active — MCC's
+        // MCCGameSessionViewModel has at least one player. This is the page
+        // where local players belong (you're setting up a game). P1's corner
+        // nameplate and the roster overlay are present on the main menu too
+        // (identical there — that's why gating on them leaked the prompt onto
+        // the main screen), but the session is EMPTY on the main menu
+        // (Players.Num==0) and fills (>=1) once you enter a lobby. Verified via
+        // the page diagnostic: main menu -> 0 players, plate page -> 1 player.
+        bool IsSessionLobbyActive() {
+            auto objs = GObjects();
+            if (!objs) return false;
+            const int32_t n = objs->num();
+            for (int32_t i = 0; i < n; ++i) {
+                auto o = objs->get(i);
+                if (!o.valid()) continue;
+                if (ClassNameOf(o) != "MCCGameSessionViewModel") continue;
+                if (ObjectNameOf(o).rfind("Default__", 0) == 0) continue; // CDO
+                PtrArray players = o.read<PtrArray>(kGSVM_Players);
+                if (players.num >= 1) return true;
+            }
+            return false;
         }
 
         // The LIVE displayed string of a UTextBlock-derived widget. We call the
@@ -767,6 +791,26 @@ namespace AlphaRing::UE::NameplateInjector {
                 return;
             }
             s_menu_miss = 0;
+
+            // PAGE GATE — the coop plates + join prompt belong on the game-
+            // session lobby page (where you set players up), NOT the main menu.
+            // P1's nameplate and the roster overlay are present on both, so gate
+            // on the session having players: empty (Num==0) on the main menu,
+            // >=1 once a lobby is entered. The populated nameplate is confirmed
+            // present this tick, so the clone widgets are valid → HIDE them (not
+            // forget) when off-page; they re-show instantly on return.
+            static int s_page_logged = -1;
+            bool onPage = IsSessionLobbyActive();
+            if (s_page_logged != (onPage ? 1 : 0)) {
+                Log(onPage ? "page: session lobby active — coop plates ON"
+                           : "page: no session — coop plates hidden");
+                s_page_logged = onPage ? 1 : 0;
+            }
+            if (!onPage) {
+                for (int slot = 1; slot <= 3; ++slot) SetRowVisible(slot, false);
+                for (int c = 0; c < 4; ++c) g_a_hold[c] = 0;
+                return;
+            }
 
             auto ss = AlphaRing::Global::MCC::Splitscreen();
             int count = ss->player_count;
