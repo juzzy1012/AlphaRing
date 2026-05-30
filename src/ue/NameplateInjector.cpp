@@ -32,7 +32,6 @@ namespace AlphaRing::UE::NameplateInjector {
         constexpr uintptr_t kSessionVM_PlayerNameValue = 0x00C8; // MCCSessionPlayerViewModel.PlayerName(0x78).Value(0x50)
 
         // Visual-parity layouts (UMG / MCC SDK):
-        constexpr uintptr_t kWidget_RenderOpacity      = 0x011C; // UWidget.RenderOpacity (float)
         constexpr uintptr_t kNameplate_RosterButtonIcon= 0x0388; // WBP_Nameplate_C.RosterButtonIcon (UImage*)
         constexpr uintptr_t kNPWidget_RosterButton     = 0x0358; // MCCNameplateOverlayWidget.RosterButton (USDTile*)
         constexpr uintptr_t kNPWidget_RosterInputPanel = 0x0360; // MCCNameplateOverlayWidget.RosterInputPanel (UPanelWidget*)
@@ -40,8 +39,6 @@ namespace AlphaRing::UE::NameplateInjector {
         constexpr uintptr_t kImage_ColorAndOpacity     = 0x01F8; // UImage.ColorAndOpacity (FLinearColor) — the tint
         constexpr uintptr_t kBrush_ResourceObject      = 0x0048; // FSlateBrush.ResourceObject (UObject*)
         constexpr uintptr_t kDynImage_ImageUri         = 0x0260; // MCCDynamicImage.ImageUri (FString)
-        constexpr uintptr_t kDynImage_LoadedTexture    = 0x0298; // MCCDynamicImage.LoadedTexture (UTexture2D*)
-        constexpr uintptr_t kEmblemWidget_ViewModel    = 0x0328; // MCCEmblemWidget.EmblemViewModel
 
         constexpr __int64 kProcessEventRVA = 0x00E8E7D8;
         void (__fastcall* g_orig_process_event)(void*, void*, void*) = nullptr;
@@ -88,10 +85,11 @@ namespace AlphaRing::UE::NameplateInjector {
         void* c_convFn      = nullptr; // KismetTextLibrary.Conv_StringToText(FString)->FText
         void* c_toStrFn     = nullptr; // KismetTextLibrary.Conv_TextToString(FText)->FString
         void* c_getTextFn   = nullptr; // TextBlock.GetText()->FText (live Slate text)
-        void* c_setOpacityFn= nullptr; // Widget.SetRenderOpacity(float)
         void* c_setBrushFn  = nullptr; // Image.SetBrush(FSlateBrush)
         void* c_setColorFn  = nullptr; // Image.SetColorAndOpacity(FLinearColor)
-        void* c_emblemRefreshFn = nullptr; // MCCEmblemWidget.RefreshTextures()
+        void* c_setJustifyFn= nullptr; // TextBlock.SetJustification(ETextJustify)
+        void* c_setMinWidthFn = nullptr; // TextBlock.SetMinDesiredWidth(float)
+        void* c_getDesiredFn  = nullptr; // Widget.GetDesiredSize()->FVector2D
         void* c_setImageUriFn = nullptr;   // MCCDynamicImage.SetImageUri(FString)
 
         // spawned nameplate per row (1..3); g_vis caches visibility to avoid
@@ -105,6 +103,12 @@ namespace AlphaRing::UE::NameplateInjector {
         std::vector<void*> g_tag_group[4]; // the "[", "UNSC", "]" blocks together
         std::wstring g_text[4];
         int   g_tag_vis[4] = { -1, -1, -1, -1 }; // clan-tag visibility cache
+        // The join-prompt plate is a bare transparent box (no blue bar / emblem /
+        // rank) — only joined PLAYER plates get full visual parity. Tracked per
+        // slot so the mirror skips prompt plates and collapses their content.
+        bool  g_is_prompt[4] = {};
+        int   g_content_vis[4] = { -1, -1, -1, -1 }; // plate body (bar/emblem/rank) cache
+        int   g_justify[4] = { -1, -1, -1, -1 };     // name-text justification cache
 
         // Cached primary-player gamertag (read from MCC's own nameplate).
         std::wstring g_gamertag;
@@ -139,10 +143,11 @@ namespace AlphaRing::UE::NameplateInjector {
             c_convFn      = FindFunction("KismetTextLibrary", "Conv_StringToText").ptr();
             c_toStrFn     = FindFunction("KismetTextLibrary", "Conv_TextToString").ptr();
             c_getTextFn   = FindFunction("TextBlock", "GetText").ptr();
-            c_setOpacityFn= FindFunction("Widget", "SetRenderOpacity").ptr();
             c_setBrushFn  = FindFunction("Image", "SetBrush").ptr();
             c_setColorFn  = FindFunction("Image", "SetColorAndOpacity").ptr();
-            c_emblemRefreshFn = FindFunction("MCCEmblemWidget", "RefreshTextures").ptr();
+            c_setJustifyFn= FindFunction("TextBlock", "SetJustification").ptr();
+            c_setMinWidthFn = FindFunction("TextBlock", "SetMinDesiredWidth").ptr();
+            c_getDesiredFn  = FindFunction("Widget", "GetDesiredSize").ptr();
             c_setImageUriFn = FindFunction("MCCDynamicImage", "SetImageUri").ptr();
             g_resolved = c_widgetClass && c_createFn && c_wblCDO && c_addFn;
             if (g_resolved) {
@@ -395,15 +400,6 @@ namespace AlphaRing::UE::NameplateInjector {
             ProcessEvent(Object(block), Object(c_setTextFn), &p);
         }
 
-        bool IsWidgetClass(const std::string& cn) {
-            static const char* kHints[] = {
-                "Image", "Text", "Block", "Tile", "Border", "Button", "Box",
-                "Panel", "Widget", "Overlay", "Canvas", "Icon", "Bar", "Scale",
-            };
-            for (auto h : kHints) if (cn.find(h) != std::string::npos) return true;
-            return false;
-        }
-
         bool IsImageClass(const std::string& cn) {
             return cn == "Image" || cn == "MCCDynamicImage" || cn == "MCCUUIImage";
         }
@@ -437,6 +433,7 @@ namespace AlphaRing::UE::NameplateInjector {
                     continue;
                 }
                 for (int s = 1; s < 4; ++s) {
+                    if (g_is_prompt[s]) continue; // prompt plate stays transparent
                     if (g_widgets[s] && HasAncestor(o, g_widgets[s], 16)) {
                         dst.push_back({ ObjectNameOf(o), o.ptr() });
                         break;
@@ -475,85 +472,6 @@ namespace AlphaRing::UE::NameplateInjector {
             }
         }
 
-        // One-shot structural diff: log every widget descendant of P1's real
-        // nameplate and of a clone (name, class, RenderOpacity, and image brush
-        // resource), so any remaining visual delta is pinpointable from the log
-        // without another game run.
-        void DumpTree(Object root, const char* tag) {
-            auto objs = GObjects();
-            if (!objs || !root.valid()) return;
-            const int32_t n = objs->num();
-            int count = 0;
-            Log(std::string("=== tree dump [") + tag + "] root=" +
-                ObjectNameOf(root) + " (" + ClassNameOf(root) + ") ===");
-            for (int32_t i = 0; i < n; ++i) {
-                auto o = objs->get(i);
-                if (!o.valid()) continue;
-                auto cn = ClassNameOf(o);
-                if (!IsWidgetClass(cn)) continue;
-                // Slots / WidgetTree aren't UWidgets — reading RenderOpacity at
-                // 0x11C on them is out-of-bounds garbage; skip.
-                if (cn.find("Slot") != std::string::npos ||
-                    cn.find("Tree") != std::string::npos) continue;
-                if (!HasAncestor(o, root.ptr(), 16)) continue;
-                float op = o.read<float>(kWidget_RenderOpacity);
-                void* res = nullptr;
-                if (IsImageClass(cn))
-                    res = o.read<void*>(kImage_Brush + kBrush_ResourceObject);
-                char b[256];
-                snprintf(b, sizeof(b), "  [%s] %s : %s  opacity=%.2f%s",
-                         tag, ObjectNameOf(o).c_str(), cn.c_str(), op,
-                         res ? "  brush=SET" : (cn == "Image" ? "  brush=NULL" : ""));
-                Log(b);
-                if (++count > 64) { Log("  ... (truncated)"); break; }
-            }
-        }
-
-        // One-shot probe of P1's image widgets: log the ACTUAL texture source
-        // for each (brush ResourceObject + class, plus MCCDynamicImage's
-        // LoadedTexture + ImageUri, plus each emblem widget's ViewModel) so we
-        // can drive the right field. Also caches the blue-bar URI.
-        void ProbeImageSources(Object root, const char* tag) {
-            auto objs = GObjects();
-            if (!objs || !root.valid()) return;
-            const int32_t n = objs->num();
-            Log(std::string("=== image sources [") + tag + "] ===");
-            for (int32_t i = 0; i < n; ++i) {
-                auto o = objs->get(i);
-                if (!o.valid()) continue;
-                auto cn = ClassNameOf(o);
-                bool img = IsImageClass(cn);
-                bool emblem = (cn == "MCCEmblemWidget" || cn == "WBP_Emblem_C");
-                if (!img && !emblem) continue;
-                if (!HasAncestor(o, root.ptr(), 16)) continue;
-                auto on = ObjectNameOf(o);
-                if (emblem) {
-                    void* vm = o.read<void*>(kEmblemWidget_ViewModel);
-                    char b[200];
-                    snprintf(b, sizeof(b), "  [%s] EMBLEM %s vm=%p (%s)", tag, on.c_str(),
-                             vm, vm ? ClassNameOf(Object(vm)).c_str() : "null");
-                    Log(b);
-                    continue;
-                }
-                void* res = o.read<void*>(kImage_Brush + kBrush_ResourceObject);
-                std::string rc = res ? ClassNameOf(Object(res)) : "null";
-                std::string extra;
-                if (cn == "MCCDynamicImage") {
-                    void* lt = o.read<void*>(kDynImage_LoadedTexture);
-                    std::wstring uri = FStringToWide(o.read<FStringView>(kDynImage_ImageUri));
-                    char b[320];
-                    snprintf(b, sizeof(b), " loaded=%p(%s) uri='%s'", lt,
-                             lt ? ClassNameOf(Object(lt)).c_str() : "null", Utf8(uri).c_str());
-                    extra = b;
-                    if (on == "Nameplate" && !uri.empty()) g_plate_uri = uri;
-                }
-                char b[400];
-                snprintf(b, sizeof(b), "  [%s] %s : %s  brushRes=%p(%s)%s", tag,
-                         on.c_str(), cn.c_str(), res, rc.c_str(), extra.c_str());
-                Log(b);
-            }
-        }
-
         // Drive the clone's blue-bar "Nameplate" MCCDynamicImage from P1's image
         // URI (its texture comes from ImageUri/LoadedTexture, NOT the brush, so
         // SetBrush can't reach it). Native loader = safe; only fires once per
@@ -583,8 +501,10 @@ namespace AlphaRing::UE::NameplateInjector {
                 if (ClassNameOf(o) != "MCCDynamicImage") continue;
                 if (ObjectNameOf(o) != "Nameplate") continue;
                 bool ours = false;
-                for (int s = 1; s < 4; ++s)
+                for (int s = 1; s < 4; ++s) {
+                    if (g_is_prompt[s]) continue; // prompt plate stays transparent
                     if (g_widgets[s] && HasAncestor(o, g_widgets[s], 16)) { ours = true; break; }
+                }
                 if (!ours) continue;
                 std::wstring cur = FStringToWide(o.read<FStringView>(kDynImage_ImageUri));
                 if (cur == g_plate_uri) continue;
@@ -614,6 +534,69 @@ namespace AlphaRing::UE::NameplateInjector {
                 void* el = widget.read<void*>(off);
                 if (el) ProcessEvent(Object(el), Object(c_visFn), &vis);
             }
+        }
+
+        // Show/hide the plate BODY — the blue bar ("Nameplate"), emblem
+        // ("Emblem"), rank ("AccountLevelIcons"), the left avatar box
+        // ("PlayerPreview") and the XP bar ("AccountProgression"/"XPProgress").
+        // Collapsed = a bare transparent box (the join prompt); visible = a full
+        // player plate. O(n) scan, but cached so it only runs when state flips.
+        void SetPlateContentVisible(int slot, bool show) {
+            void* w = g_widgets[slot];
+            if (!w || !c_visFn) return;
+            int v = show ? 1 : 0;
+            if (g_content_vis[slot] == v) return;
+            auto objs = GObjects();
+            if (!objs) return;
+            const int32_t n = objs->num();
+            uint8_t vis = show ? 0 : 1; // Visible=0, Collapsed=1
+            for (int32_t i = 0; i < n; ++i) {
+                auto o = objs->get(i);
+                if (!o.valid()) continue;
+                auto on = ObjectNameOf(o);
+                // Only LEAF visuals — NOT containers like PlayerPreview /
+                // AccountProgression, which hold the name text (collapsing them
+                // hides "Hold A to Join").
+                if (on != "Nameplate" && on != "Emblem" && on != "AccountLevelIcons" &&
+                    on != "XPProgress")
+                    continue;
+                if (!HasAncestor(o, w, 16)) continue;
+                ProcessEvent(o, Object(c_visFn), &vis);
+            }
+            g_content_vis[slot] = v;
+        }
+
+        // Style the plate's name text: prompt = centered across the full plate,
+        // player = left/auto. A text block auto-sizes to its content, so
+        // justification alone can't center it — we first give it a min width
+        // equal to the plate's width so it spans the row, then center within it.
+        void SetNameStyle(int slot, bool center) {
+            if (!g_name_tb[slot]) return;
+            int v = center ? 1 : 0;
+            if (g_justify[slot] == v) return;
+            if (c_setMinWidthFn) {
+                float w = 0.0f;
+                if (center) {
+                    // The name block starts AFTER the emblem column (left offset
+                    // S ~= 0.16*plateWidth). A block of width plateWidth-2*S,
+                    // grown rightward from S and center-justified, lands the text
+                    // at the true plate centre. => ~0.68 * plateWidth.
+                    float plateW = 640.0f; // fallback
+                    if (c_getDesiredFn && g_widgets[slot]) {
+                        struct { FVector2D ret; } gp{};
+                        ProcessEvent(Object(g_widgets[slot]), Object(c_getDesiredFn), &gp);
+                        if (gp.ret.x > 200.0f && gp.ret.x < 4000.0f) plateW = gp.ret.x;
+                    }
+                    w = plateW * 0.68f;
+                }
+                struct { float w; } mp{ w };
+                ProcessEvent(Object(g_name_tb[slot]), Object(c_setMinWidthFn), &mp);
+            }
+            if (c_setJustifyFn) {
+                uint8_t j = center ? 1 : 0; // ETextJustify: Left=0, Center=1
+                ProcessEvent(Object(g_name_tb[slot]), Object(c_setJustifyFn), &j);
+            }
+            g_justify[slot] = v;
         }
 
         Object CreateNameplate(int slot) {
@@ -671,32 +654,6 @@ namespace AlphaRing::UE::NameplateInjector {
             ResolveBlocks(widget, slot);
             g_text[slot].clear();
             g_tag_vis[slot] = -1;
-
-            // One-shot structural diff (clone vs P1) on the first spawned plate.
-            static bool s_dumped = false;
-            if (!s_dumped) {
-                s_dumped = true;
-                // Enumerate EVERY WBP_Nameplate_C so we can see archetype vs the
-                // live instance (overlayVM + ownVM populated => the real P1).
-                auto objs = GObjects();
-                if (objs) {
-                    const int32_t n = objs->num();
-                    Log("=== all WBP_Nameplate_C instances ===");
-                    for (int32_t i = 0; i < n; ++i) {
-                        auto o = objs->get(i);
-                        if (!o.valid() || ClassNameOf(o) != "WBP_Nameplate_C") continue;
-                        Object vm(o.read<void*>(kNPWidget_OverlayVM));
-                        Object own = vm.valid() ? Object(vm.read<void*>(kNPOVM_OwnPlayerViewModel)) : Object();
-                        char b[200];
-                        snprintf(b, sizeof(b), "  nameplate '%s' ptr=%p overlayVM=%p ownVM=%p",
-                                 ObjectNameOf(o).c_str(), o.ptr(), vm.ptr(), own.ptr());
-                        Log(b);
-                    }
-                }
-                Object live = FindPopulatedNameplate();
-                if (live.valid()) { DumpTree(live, "P1"); ProbeImageSources(live, "P1live"); }
-                DumpTree(widget, "clone");
-            }
             return widget;
         }
 
@@ -748,7 +705,15 @@ namespace AlphaRing::UE::NameplateInjector {
                         g_text[slot] = specs[idx].name;
                     }
                     SetTagVisible(slot, specs[idx].showTag);
-                    SetRosterGlyphVisible(slot, specs[idx].showGlyph);
+                    // The roster button belongs on PLAYER plates, not the join
+                    // prompt (showGlyph marks the prompt) — hide it there.
+                    SetRosterGlyphVisible(slot, !specs[idx].showGlyph);
+                    // The prompt (showGlyph) is a transparent box: hide its blue
+                    // bar / emblem / rank and skip the visual mirror; player
+                    // plates keep the full body.
+                    g_is_prompt[slot] = specs[idx].showGlyph;
+                    SetPlateContentVisible(slot, !specs[idx].showGlyph);
+                    SetNameStyle(slot, specs[idx].showGlyph); // prompt = centered
                 } else {
                     SetRowVisible(slot, false);
                 }
@@ -761,17 +726,6 @@ namespace AlphaRing::UE::NameplateInjector {
                 Object real = FindPopulatedNameplate();
                 MirrorBrushes(real);
                 MirrorBlueBar(real);
-                // Time-series probe of P1's image sources (~1s x 12) to catch
-                // async texture loads / find where the blue bar + emblem live.
-                static unsigned long long s_probe_last = 0;
-                static int s_probe_n = 0;
-                unsigned long long now = GetTickCount64();
-                if (real.valid() && s_probe_n < 12 && now - s_probe_last > 1000) {
-                    s_probe_last = now;
-                    char t[16];
-                    snprintf(t, sizeof(t), "P1#%d", s_probe_n++);
-                    ProbeImageSources(real, t);
-                }
             }
         }
 
