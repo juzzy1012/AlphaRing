@@ -684,7 +684,7 @@ namespace AlphaRing::UE::NameplateInjector {
         // Show one nameplate per entry in `specs` (slots 1..N), each populated
         // with its name; hide the rest. The clan tag keeps its native default
         // text ("[UNSC]") — we only toggle its visibility.
-        void Reconcile(const RowSpec* specs, int rows) {
+        void Reconcile(const RowSpec* specs, int rows, Object real) {
             if (rows > 3) rows = 3;
             bool anyActive = false;
             for (int slot = 1; slot <= 3; ++slot) {
@@ -721,45 +721,52 @@ namespace AlphaRing::UE::NameplateInjector {
             // Copy P1's populated visuals onto the clones so they render
             // identically — brush images (rank/XP) via SetBrush, and the blue
             // bar (MCCDynamicImage) via its native ImageUri loader. Runs each
-            // tick to pick up async-loaded textures.
-            if (anyActive) {
-                Object real = FindPopulatedNameplate();
+            // tick to pick up async-loaded textures. `real` is the caller's
+            // already-validated live source.
+            if (anyActive && real.valid()) {
                 MirrorBrushes(real);
                 MirrorBlueBar(real);
             }
         }
 
-        void Reconcile(int rows) {
-            RowSpec none[3] = {};
-            Reconcile(none, rows < 0 ? 0 : rows);
-        }
-
-        // Is MCC's OWN nameplate widget present yet? (Skips ours.) Used to gate
-        // until we're past the press-start screen where the shell nameplate
-        // isn't shown.
-        bool RealNameplateExists() {
-            return FindRealNameplate().valid();
+        // Drop all clone references WITHOUT touching the widgets. Used when the
+        // menu nameplate UI is being torn down (entering a match / loading): the
+        // engine frees the widgets during the transition, and ProcessEvent on a
+        // freed widget is an uncatchable fatal. They re-spawn fresh on return to
+        // the menu (g_widgets are null again).
+        void ForgetClones() {
+            for (int s = 1; s < 4; ++s) {
+                g_widgets[s] = nullptr;
+                g_vis[s] = -1;
+                g_name_tb[s] = nullptr;
+                g_tag_group[s].clear();
+                g_text[s].clear();
+                g_tag_vis[s] = -1;
+                g_is_prompt[s] = false;
+                g_content_vis[s] = -1;
+                g_justify[s] = -1;
+            }
         }
 
         void CoopTick() {
             if (!ResolveStatics()) return;
 
-            // The shell nameplate roster + "hold A to join" belong on the
-            // menu/lobby. In a live match A means "jump" — never join there, and
-            // hide the roster (the game has its own splitscreen HUD).
-            if (MCC::IsInGame()) {
-                Reconcile(0);
+            // SAFETY GATE — only manage clones while the LIVE menu nameplate is
+            // confirmed present THIS tick. In a match (A=jump; the game has its
+            // own splitscreen HUD) or while the menu UI is torn down (loading /
+            // transition), DROP our clone refs WITHOUT touching them: the engine
+            // frees the widgets during the transition and ProcessEvent on a freed
+            // widget is an uncatchable fatal. A short grace period avoids
+            // forgetting on a one-tick miss. The populated nameplate's presence
+            // also replaces the old press-start readiness gate.
+            static int s_menu_miss = 0;
+            Object real = MCC::IsInGame() ? Object() : FindPopulatedNameplate();
+            if (MCC::IsInGame() || !real.valid()) {
+                if (MCC::IsInGame() || ++s_menu_miss >= 3) { ForgetClones(); s_menu_miss = 0; }
                 for (int c = 0; c < 4; ++c) g_a_hold[c] = 0;
                 return;
             }
-
-            // Wait until MCC's own nameplate is on screen (past press-start),
-            // so ours appear in sync with it. Cache once ready.
-            static bool g_shell_ready = false;
-            if (!g_shell_ready) {
-                if (!RealNameplateExists()) { Reconcile(0); return; }
-                g_shell_ready = true;
-            }
+            s_menu_miss = 0;
 
             auto ss = AlphaRing::Global::MCC::Splitscreen();
             int count = ss->player_count;
@@ -832,7 +839,7 @@ namespace AlphaRing::UE::NameplateInjector {
                 specs[rows].showGlyph = true; // surface the native Xbox A glyph
                 ++rows;
             }
-            Reconcile(specs, rows);
+            Reconcile(specs, rows, real);
 
             static int s_last_rows = -1, s_last_count = -1;
             if (rows != s_last_rows || count != s_last_count) {
