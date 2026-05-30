@@ -9,6 +9,8 @@
 #include "mcc/network/Network.h"
 #include "mcc/splitscreen/Splitscreen.h"
 #include "mcc/settings/Settings.h"
+#include "ue/NameplateInjector.h"
+#include "global/Global.h"
 
 namespace MCC {
     static bool* bIsInGame;
@@ -67,6 +69,10 @@ namespace MCC {
             return false;
         }
 
+        // Hook ProcessEvent so native UE work (nameplate injection) runs on the
+        // game thread in any UI state (lobby/menu/in-game).
+        AlphaRing::UE::NameplateInjector::Install();
+
         MCC::Settings::Splitscreen::Load();
         bool profileLoad = MCC::Settings::Profile::Load();
         if(profileLoad) {
@@ -74,6 +80,15 @@ namespace MCC {
             // MCC::Settings::Profile::Initialize(game_manager);
         }
         MCC::Settings::Splitscreen::ApplyToRuntime();
+
+        // Always start a session with just Player 1; the joined count is not
+        // persisted (controller/profile preferences still are). Extra players
+        // join via "press A" at runtime.
+        {
+            auto ss = AlphaRing::Global::MCC::Splitscreen();
+            ss->player_count = 1;
+            ss->b_override = false;
+        }
 
 		////Ask user if they want to enable network
   //      if (MessageBox(nullptr, "Would you like to enable network?", "Network", MB_YESNO) == IDYES)

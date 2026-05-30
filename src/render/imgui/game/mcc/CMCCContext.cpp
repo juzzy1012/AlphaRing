@@ -4,6 +4,7 @@
 
 #include "mcc/network/Network.h"
 #include "mcc/splitscreen/Splitscreen.h"
+#include "mcc/splitscreen/LocalCoop.h"
 #include "mcc/module/Module.h"
 
 static const char* tutorial_message = R"(TUTORIAL:
@@ -52,6 +53,8 @@ void CMCCContext::render() {
 
         ImGui::EndMainMenuBar();
     }
+
+    MCC::LocalCoop::ImGuiContext();
 
     MCC::Module::ImGuiContext();
 

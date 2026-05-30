@@ -14,6 +14,7 @@
 
 #include "mcc/mcc.h"
 #include "mcc/CGameGlobal.h"
+#include "ue/RosterProbe.h"
 
 static ICContext* pages[7] {
         nullptr,
@@ -61,6 +62,9 @@ namespace AlphaRing::Render::ImGui {
     }
 
     void Render() {
+        // Unattended native-roster capture (read-only reflection; render thread).
+        AlphaRing::UE::RosterProbe::AutoTick();
+
         // Skip ImGui processing entirely when menu is hidden
         // This prevents ImGui from capturing input and interfering with game menus
         if (!AlphaRing::Global::Global()->show_imgui) {
