@@ -68,7 +68,16 @@ bool CGameManager::get_key_state(CGameManager *self, DWORD index, input_data_t *
     if (index >= p_profile->player_count)
         return false;
 
-    if (p_profile->b_player0_use_km && !index) {
+    // Route KBM for whichever slot owns the keyboard (slot 0 legacy flag, or
+    // any slot via the controller_index==4 sentinel) — NOT just index 0. The
+    // single-KBM invariant (enforced by the join logic) keeps the shared
+    // device-manager QPC mouse-delta correct.
+    if (CGameManager::SlotUsesKbm(index)) {
+        static DWORD s_kbm_logged_slot = (DWORD)-1;
+        if (s_kbm_logged_slot != index) {
+            LOG_INFO("[coop] get_key_state: KBM routed for slot {}", index);
+            s_kbm_logged_slot = index;
+        }
         p_device = device_manager->p_input_device[4];
         device_manager->table->update_state(device_manager, 0, 0, false);
         QueryPerformanceCounter(&qpc);

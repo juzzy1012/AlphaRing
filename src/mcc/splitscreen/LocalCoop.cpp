@@ -155,23 +155,21 @@ namespace MCC::LocalCoop {
             ImGui::Dummy(ImVec2(0, 6));
             ImGui::TextColored(Theme::kTextDim, "Empty slot");
         } else {
-            // Device line.
+            // Device line. controller_index==4 is the keyboard sentinel, so a
+            // non-primary slot can also be Keyboard / Mouse.
+            auto profile = CGameManager::get_profile(slot);
+            int ci = profile ? profile->controller_index : -1;
             char device[32];
-            if (primary && p0_km) {
+            if ((primary && p0_km) || ci == 4)
                 snprintf(device, sizeof(device), "Keyboard / Mouse");
-            } else {
-                auto profile = CGameManager::get_profile(slot);
-                int ci = profile ? profile->controller_index : -1;
-                if (ci >= 0 && ci < 4)
-                    snprintf(device, sizeof(device), "Controller %d", ci + 1);
-                else
-                    snprintf(device, sizeof(device), "Unassigned");
-            }
+            else if (ci >= 0 && ci < 4)
+                snprintf(device, sizeof(device), "Controller %d", ci + 1);
+            else
+                snprintf(device, sizeof(device), "Unassigned");
 
             ImGui::TextColored(primary ? Theme::kAccentGold : Theme::kAccent, "%s", device);
 
             // Name / service tag from the profile.
-            auto profile = CGameManager::get_profile(slot);
             if (profile) {
                 char name[256];
                 String::convert(name, profile->name, sizeof(name));
@@ -228,6 +226,10 @@ namespace MCC::LocalCoop {
                 ss->b_player0_use_km = km;
                 dirty = true;
             }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Auto-detected from the device you use to navigate the menu.\n"
+                    "Toggle to override before entering a lobby; it locks once a lobby opens.");
 
             ImGui::Dummy(ImVec2(0, 6));
 

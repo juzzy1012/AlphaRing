@@ -37,6 +37,11 @@
         // get_xbox_user_id. Returns false if unavailable.
         static bool get_name(int index, wchar_t* out, int count);
         static CInputDevice* get_controller(int index);
+        // Does this player slot read keyboard/mouse instead of an XInput pad?
+        // Slot 0 via the legacy b_player0_use_km flag, OR any slot whose
+        // profile controller_index == 4 (the p_input_device[] KBM index). At
+        // most one slot may be KBM at a time (join logic enforces this).
+        static bool SlotUsesKbm(int index);
 
     private:
         static void __fastcall set_vibration(CGameManager* self, DWORD dwUserIndex, XINPUT_VIBRATION *pVibration);

@@ -118,6 +118,8 @@ namespace AlphaRing::UE::NameplateInjector {
 
         // Per-controller "A held since" timestamp for hold-to-join (0 = not held).
         unsigned long long g_a_hold[4] = {};
+        // "Enter held since" timestamp for keyboard hold-to-join (0 = not held).
+        unsigned long long g_enter_hold = 0;
 
         void Log(const std::string& s) {
             LOG_INFO("[coop] {}", s.c_str());
@@ -772,6 +774,89 @@ namespace AlphaRing::UE::NameplateInjector {
             }
         }
 
+        // Is this pad actively being used this tick (button / trigger / stick
+        // beyond a generous deadzone)? Mere connection isn't enough — XInput
+        // reports idle/virtual pads, and we don't want one to steal P1.
+        bool PadActive(const XINPUT_STATE& st) {
+            const auto& g = st.Gamepad;
+            if (g.wButtons != 0) return true;
+            if (g.bLeftTrigger > 40 || g.bRightTrigger > 40) return true;
+            constexpr int dz = 12000; // generous — ignores stick drift
+            if (g.sThumbLX > dz || g.sThumbLX < -dz) return true;
+            if (g.sThumbLY > dz || g.sThumbLY < -dz) return true;
+            if (g.sThumbRX > dz || g.sThumbRX < -dz) return true;
+            if (g.sThumbRY > dz || g.sThumbRY < -dz) return true;
+            return false;
+        }
+
+        // Is the keyboard/mouse being used this tick? A small menu-relevant key
+        // set plus mouse buttons and cursor movement — mirrors what flips MCC's
+        // own menu into KBM mode.
+        bool KeyboardActive() {
+            static const int keys[] = {
+                VK_RETURN, VK_SPACE, VK_ESCAPE, VK_BACK, VK_TAB,
+                VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT,
+                'W', 'A', 'S', 'D', 'E', 'F',
+                VK_LBUTTON, VK_RBUTTON,
+            };
+            for (int k : keys)
+                if (GetAsyncKeyState(k) & 0x8000) return true;
+            // Cursor movement (mouse used to navigate). Threshold avoids jitter.
+            POINT p{};
+            if (GetCursorPos(&p)) {
+                static bool s_have = false;
+                static POINT s_last{};
+                if (s_have) {
+                    long dx = p.x - s_last.x, dy = p.y - s_last.y;
+                    s_last = p;
+                    if (dx * dx + dy * dy > 100) return true; // moved > ~10px
+                } else {
+                    s_last = p; s_have = true;
+                }
+            }
+            return false;
+        }
+
+        // Auto-identify Player 1's input device from how the user is driving the
+        // menu — the specific gamepad, or keyboard/mouse — mirroring MCC's own
+        // last-used-device auto-switch. Runs ONLY while solo on the main menu;
+        // once a lobby is active or extra players have joined the assignment is
+        // frozen so P1 can't flip while a second player is joining. b_override
+        // stays false here, so this only PRE-CONFIGURES the routing the game
+        // reads once a second player joins. Sticky: keep the prior device on a
+        // tick with no input. Logs only on change.
+        void AutoDetectPlayer1(bool lobbyActive) {
+            auto ss = AlphaRing::Global::MCC::Splitscreen();
+            if (!ss) return;
+            if (lobbyActive || ss->player_count > 1) return; // frozen
+
+            int activePad = -1;
+            for (int c = 0; c < 4; ++c) {
+                XINPUT_STATE st{};
+                if (AlphaRing::Input::GetXInputGetState(c, &st) && PadActive(st)) {
+                    activePad = c;
+                    break;
+                }
+            }
+
+            static int s_logged = -2; // -2 none yet, -1 KBM, 0..3 pad index
+            if (activePad >= 0) {
+                ss->b_player0_use_km = false;
+                auto p0 = CGameManager::get_profile(0);
+                if (p0) p0->controller_index = activePad;
+                if (s_logged != activePad) {
+                    char b[64];
+                    snprintf(b, sizeof(b), "P1 auto-detect: gamepad %d", activePad);
+                    Log(b);
+                    s_logged = activePad;
+                }
+            } else if (KeyboardActive()) {
+                ss->b_player0_use_km = true;
+                if (s_logged != -1) { Log("P1 auto-detect: keyboard/mouse"); s_logged = -1; }
+            }
+            // else: nothing active this tick — keep the prior assignment.
+        }
+
         void CoopTick() {
             if (!ResolveStatics()) return;
 
@@ -788,9 +873,17 @@ namespace AlphaRing::UE::NameplateInjector {
             if (MCC::IsInGame() || !real.valid()) {
                 if (MCC::IsInGame() || ++s_menu_miss >= 3) { ForgetClones(); s_menu_miss = 0; }
                 for (int c = 0; c < 4; ++c) g_a_hold[c] = 0;
+                g_enter_hold = 0;
                 return;
             }
             s_menu_miss = 0;
+
+            bool onPage = IsSessionLobbyActive();
+
+            // P1 AUTO-DETECT — runs BEFORE the page gate so it works on the main
+            // menu (which the gate early-returns). Identifies P1's device (the
+            // gamepad they're using, or KBM) and freezes once a lobby is active.
+            AutoDetectPlayer1(onPage);
 
             // PAGE GATE — the coop plates + join prompt belong on the game-
             // session lobby page (where you set players up), NOT the main menu.
@@ -800,7 +893,6 @@ namespace AlphaRing::UE::NameplateInjector {
             // present this tick, so the clone widgets are valid → HIDE them (not
             // forget) when off-page; they re-show instantly on return.
             static int s_page_logged = -1;
-            bool onPage = IsSessionLobbyActive();
             if (s_page_logged != (onPage ? 1 : 0)) {
                 Log(onPage ? "page: session lobby active — coop plates ON"
                            : "page: no session — coop plates hidden");
@@ -809,6 +901,7 @@ namespace AlphaRing::UE::NameplateInjector {
             if (!onPage) {
                 for (int slot = 1; slot <= 3; ++slot) SetRowVisible(slot, false);
                 for (int c = 0; c < 4; ++c) g_a_hold[c] = 0;
+                g_enter_hold = 0;
                 return;
             }
 
@@ -817,12 +910,17 @@ namespace AlphaRing::UE::NameplateInjector {
             if (count < 1) count = 1;
             if (count > 4) count = 4;
 
-            // Controllers already assigned to an active player slot.
+            // Devices already owned by an active player slot. Pads are tracked
+            // in assigned[]; the keyboard (controller_index==4, or P1's legacy
+            // KBM flag) is tracked separately so only ONE slot can be KBM.
             bool assigned[4] = {};
+            bool kbm_assigned = ss->b_player0_use_km;
             for (int slot = 0; slot < count; ++slot) {
                 if (slot == 0 && ss->b_player0_use_km) continue;
                 auto prof = CGameManager::get_profile(slot);
-                if (prof && prof->controller_index >= 0 && prof->controller_index < 4)
+                if (!prof) continue;
+                if (prof->controller_index == 4) { kbm_assigned = true; continue; }
+                if (prof->controller_index >= 0 && prof->controller_index < 4)
                     assigned[prof->controller_index] = true;
             }
 
@@ -863,10 +961,35 @@ namespace AlphaRing::UE::NameplateInjector {
                 }
             }
 
+            // Keyboard joins via HOLD Enter, but only when the keyboard isn't
+            // already a player (single-KBM). Symmetric with hold-A; the hold
+            // (not a tap) keeps it from firing MCC's menu Enter=select.
+            if (!kbm_assigned && count < 4) {
+                bool enter = (GetAsyncKeyState(VK_RETURN) & 0x8000) != 0;
+                if (enter) {
+                    if (g_enter_hold == 0) {
+                        g_enter_hold = now;
+                    } else if (now - g_enter_hold >= kHoldMs) {
+                        int slot = count;
+                        auto prof = CGameManager::get_profile(slot);
+                        if (prof) {
+                            prof->controller_index = 4; // KBM sentinel
+                            ss->player_count = ++count;
+                            ss->b_override = true;
+                            kbm_assigned = true;
+                            g_enter_hold = 0;
+                            Log("join (held Enter): keyboard joined as a player");
+                        }
+                    }
+                } else {
+                    g_enter_hold = 0;
+                }
+            }
+
             // Rows = joined extras (labelled "Name(N)" console-style) + a SINGLE
-            // "press A to join" slot when any unjoined controller is connected
-            // and there's room (one open slot, not one per detected pad — XInput
-            // may report virtual pads).
+            // join prompt when there's an open slot and a free device. The
+            // prompt's label reflects what can still join: a connected unjoined
+            // pad ("A"), the free keyboard ("Enter"), or both.
             std::wstring base = BaseName();
             RowSpec specs[3];
             int rows = 0;
@@ -876,9 +999,13 @@ namespace AlphaRing::UE::NameplateInjector {
                 specs[rows].showGlyph = false; // no roster prompt on a joined plate
                 ++rows;
             }
-            int prompts = (connected_unjoined > 0 && count < 4 && rows < 3) ? 1 : 0;
+            bool padCanJoin = connected_unjoined > 0;   // a free, connected pad
+            bool kbCanJoin  = !kbm_assigned;            // the keyboard is free
+            int prompts = ((padCanJoin || kbCanJoin) && count < 4 && rows < 3) ? 1 : 0;
             if (prompts) {
-                specs[rows].name = L"Hold A to Join";
+                specs[rows].name = (padCanJoin && kbCanJoin) ? L"Hold A or Enter to Join"
+                                 : kbCanJoin                 ? L"Hold Enter to Join"
+                                                             : L"Hold A to Join";
                 specs[rows].showTag = false;  // no clan tag on the join prompt
                 specs[rows].showGlyph = true; // surface the native Xbox A glyph
                 ++rows;

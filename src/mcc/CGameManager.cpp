@@ -107,6 +107,21 @@ bool CGameManager::get_name(int index, wchar_t* out, int count) {
     return out[0] != 0;
 }
 
+// A player slot is KBM if it's slot 0 with the legacy keyboard flag, OR any
+// slot whose profile carries the controller_index==4 sentinel (4 indexes the
+// keyboard device in CDeviceManager::p_input_device). This generalizes "the
+// keyboard belongs to player 0" to "the keyboard belongs to whichever slot
+// claimed it", so P1 can be on a gamepad while a later player joins on KBM.
+bool CGameManager::SlotUsesKbm(int index) {
+    auto setting = AlphaRing::Global::MCC::Splitscreen();
+    if (setting == nullptr)
+        return false;
+    if (index == 0 && setting->b_player0_use_km)
+        return true;
+    auto profile = get_profile(index);
+    return profile != nullptr && profile->controller_index == 4;
+}
+
 CInputDevice *CGameManager::get_controller(int index) {
     auto mng = DeviceManager();
     auto setting = AlphaRing::Global::MCC::Splitscreen();
@@ -118,7 +133,9 @@ CInputDevice *CGameManager::get_controller(int index) {
 
     auto controller_index = profile->controller_index;
 
-    if ((!index && setting->b_player0_use_km) || controller_index >= 4 || controller_index < 0)
+    // KBM slots have no XInput device (routed via the KBM branch in
+    // get_key_state); an out-of-range controller_index means "unassigned".
+    if (SlotUsesKbm(index) || controller_index >= 4 || controller_index < 0)
         return nullptr;
 
     return mng->p_input_device[controller_index];
