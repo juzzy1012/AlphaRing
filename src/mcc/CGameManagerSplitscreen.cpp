@@ -3,8 +3,12 @@
 #include "common.h"
 
 #include "./mcc.h"
+#include "./roster_probe.h"
 #include "global/Global.h"
 #include "input/Input.h"
+
+#include <intrin.h>
+#pragma intrinsic(_ReturnAddress)
 
 void CGameManager::set_vibration(CGameManager *self, DWORD dwUserIndex, XINPUT_VIBRATION *pVibration) {
     CInputDevice* p_device;
@@ -25,6 +29,8 @@ void CGameManager::set_vibration(CGameManager *self, DWORD dwUserIndex, XINPUT_V
 }
 
 bool CGameManager::get_xbox_user_id(CGameManager *self, __int64 *pId, wchar_t *pName, int size, int index) {
+    roster_probe::on_get_xbox_user_id(_ReturnAddress(), index);
+
     auto p_setting = AlphaRing::Global::MCC::Splitscreen();
     auto p_profile = get_profile(index);
 
@@ -44,6 +50,8 @@ bool CGameManager::get_xbox_user_id(CGameManager *self, __int64 *pId, wchar_t *p
 }
 
 bool CGameManager::get_key_state(CGameManager *self, DWORD index, input_data_t *p_input) {
+    roster_probe::on_get_key_state(_ReturnAddress(), index);
+
     bool result;
     LARGE_INTEGER qpc;
     float delta_time = 0;
@@ -104,6 +112,8 @@ bool CGameManager::get_key_state(CGameManager *self, DWORD index, input_data_t *
 }
 
 CUserProfile* CGameManager::get_player_profile(CGameManager *self, __int64 xid)  {
+    roster_probe::on_get_player_profile(_ReturnAddress(), xid);
+
     auto index = get_index(xid);
     auto p_setting = AlphaRing::Global::MCC::Splitscreen();
 
@@ -120,6 +130,8 @@ CUserProfile* CGameManager::get_player_profile(CGameManager *self, __int64 xid) 
 }
 
 CGamepadMapping* CGameManager::retrive_gamepad_mapping(CGameManager *self, __int64 xid) {
+    roster_probe::on_retrive_gamepad_mapping(_ReturnAddress(), xid);
+
     auto index = get_index(xid);
     auto p_setting = AlphaRing::Global::MCC::Splitscreen();
 
