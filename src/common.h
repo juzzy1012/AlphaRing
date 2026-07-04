@@ -1,24 +1,14 @@
 #pragma once
 
-#include <cstdlib>
-#include <cstdint>
-#include <cstring>
+#include <utils.h>
+#include <functional>
 
-#include <string>
-#include <memory>
-#include <filesystem>
+#include "./hook/Hook.h"
+#include "./log/Log.h"
+#include "./global/Global.h"
+#include "./filesystem/Filesystem.h"
 
-#include "./main/main.h"
-#include "./main/manager.h"
-#include "./main/logging.h"
-#include "./main/assertion.h"
-#include "./main/win32.h"
+#undef NDEBUG
+#include <assert.h>
 
-#include "./multithreading/event_queue_manager.h"
-#include "./multithreading/critical_section_manager.h"
-
-#include "./hook/hook_manager.h"
-#include "./hook/vftable_manager.h"
-
-#define STRINGIFY(x) #x
-#define TOSTRING(x) STRINGIFY(x)
+#define assertm(exp, msg) assert(((void)msg, (exp)))
