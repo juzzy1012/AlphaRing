@@ -17,6 +17,20 @@ void* __fastcall set_player_gamepad(void* a1, int a2) {
 	}
 }
 
+int64_t (__fastcall* get_player_index_by_xuid_original)(void* a1, XUID xuid);
+
+// MCC resolves splitscreen xuids to local player indices here; it doesn't know
+// about our synthetic xuids, which freezes the game on team change with 3+ players
+int64_t __fastcall get_player_index_by_xuid(void* a1, XUID xuid) {
+	if (player_manager()->get_local_player_count() == 1) {
+		return get_player_index_by_xuid_original(a1, xuid);
+	}
+
+	c_critical_section cs(_critical_section_player);
+
+	return player_manager()->get_player_index_by_xuid(xuid);
+}
+
 // game manager
 static void __fastcall signal_end_frame(i_game_manager* This, IDXGISwapChain* pSwapChain, UINT* flags);
 static s_player_profile* __fastcall local_user_get_profile(i_game_manager* This, XUID xuid);
@@ -46,12 +60,34 @@ static void __fastcall signal_end_frame(i_game_manager* This, IDXGISwapChain* pS
 	}
 }
 
+// synthetic splitscreen xuids are unknown to MCC's user manager; resolve them
+// to the host user so players 2-4 deterministically inherit player 1's data
+static XUID resolve_user_xuid(i_game_manager* This, XUID xuid) {
+	s_xdk_user user{};
+
+	mcc_manager()->get_user_by_xuid(nullptr, &user, xuid);
+
+	if (user.unknown_0 != nullptr) {
+		return xuid;
+	}
+
+	XUID host_xuid;
+
+	if (g_game_manager_vftable_original.local_user_get_player(This, &host_xuid, nullptr, 0, _local_player_0)) {
+		return host_xuid;
+	}
+
+	return xuid;
+}
+
 static s_player_profile* __fastcall local_user_get_profile(i_game_manager* This, XUID xuid) {
 	s_xdk_user user;
 	static s_player_profile result;
 
+	xuid = resolve_user_xuid(This, xuid);
+
 	mcc_manager()->get_user_by_xuid(nullptr, &user, xuid);
-	
+
 	if (user.unknown_0 != nullptr) {
 		auto profile = g_game_manager_vftable_original.local_user_get_profile(This, xuid);
 
@@ -145,7 +181,9 @@ static bool __fastcall local_user_get_player(i_game_manager* This, XUID* xuid, w
 		}
 
 		if (name && size) {
-			memcpy(name, player_manager()->get_profile(player)->name, size);
+			auto profile = player_manager()->get_profile(player);
+
+			memcpy(name, profile->name, size < sizeof(profile->name) ? size : sizeof(profile->name));
 		}
 
 		return true;
@@ -156,12 +194,14 @@ static s_gamepad_mapping* __fastcall local_user_get_gamepad_mapping(i_game_manag
 	s_xdk_user user;
 	static s_gamepad_mapping result;
 
+	xuid = resolve_user_xuid(This, xuid);
+
 	mcc_manager()->get_user_by_xuid(nullptr, &user, xuid);
 
 	if (user.unknown_0 != nullptr) {
 		memcpy(
-			&result, 
-			g_game_manager_vftable_original.local_user_get_gamepad_mapping(This, xuid), 
+			&result,
+			g_game_manager_vftable_original.local_user_get_gamepad_mapping(This, xuid),
 			sizeof(result));
 	}
 

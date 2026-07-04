@@ -8,7 +8,7 @@ using namespace libmcc;
     static returnType (__fastcall* pDetour##_original)(...); \
     returnType __fastcall pDetour(__VA_ARGS__)
 
-#ifdef _DEBUG	
+#ifdef _DEBUG
 
 Entry(void, dsSTATE_MGR__SetState, libmcc::halo1::dsSTATE_MGR* This, int id, const libmcc::halo1::dsDATA* data) {
 	dsSTATE_MGR__SetState_original(This, id, data);
@@ -21,16 +21,6 @@ Entry(void, dsSTATE_MGR__SetState, libmcc::halo1::dsSTATE_MGR* This, int id, con
 }
 
 #endif
-
-Entry(halo1::dsDATA*, dsSTATE_MGR__GetState, libmcc::halo1::dsSTATE_MGR* This, int id) {
-	auto result = dsSTATE_MGR__GetState_original(This, id);
-
-	if (This->RegisterState("IsMP", true) == id) {
-		*(bool*)result->type->GetPtr(result) = false;
-	}
-
-	return result;
-}
 
 int s_module::initialize(HMODULE hModule) {
 	for (auto& patch : patches) {
@@ -94,12 +84,12 @@ int ::c_module_manager::initialize() {
 
 		switch (i) {
 		case _module_halo1: {
-			module->patches.emplace_back(0x67492, " EB 18");
+			module->patches.emplace_back(0x67492, " EB 18"); // lift the local player limit so all 4 players can start a game
 			module->patches.emplace_back(0x427978, " EB");
-#ifdef _DEBUG	
+			module->patches.emplace_back(0x85428, " 90 90 90 90 90 90"); // extra controllers' trigger freezing the game (WinterSquire/AlphaRing#19)
+#ifdef _DEBUG
 			module->hooks.emplace_back(libmcc::halo1::s_function_offset_table::dsSTATE_MGR__SetState.first, dsSTATE_MGR__SetState, (void**)&dsSTATE_MGR__SetState_original);
 #endif
-			module->hooks.emplace_back(libmcc::halo1::s_function_offset_table::dsSTATE_MGR__GetState.first, dsSTATE_MGR__GetState, (void**)&dsSTATE_MGR__GetState_original);
 			break;
 		}
 		case _module_halo2: {

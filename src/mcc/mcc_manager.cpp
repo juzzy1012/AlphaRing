@@ -70,6 +70,19 @@ int c_mcc_manager::initialize() {
 
 	hook_manager()->enable(func);
 
+	// the winstore offset is unverified against the winstore build libmcc targets
+	if (!is_winstore()) {
+		func = get_runtime_address(g_mcc_offset_map.get_player_index_by_xuid);
+
+		hook_manager()->create(
+			func,
+			(void*)&get_player_index_by_xuid,
+			(void**)&get_player_index_by_xuid_original
+		);
+
+		hook_manager()->enable(func);
+	}
+
 	// Initialize the player manager
 	player_manager()->initialize();
 

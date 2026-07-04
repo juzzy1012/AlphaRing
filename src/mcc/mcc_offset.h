@@ -14,6 +14,7 @@ enum e_mcc_offset {
 	_mcc_offset_game_globals_states,
 	_mcc_offset_game_globals,
 	_mcc_offset_set_player_input,
+	_mcc_offset_get_player_index_by_xuid,
 
 	k_mcc_offset_count,
 };
@@ -29,6 +30,7 @@ struct s_mcc_offset_map {
 	s_mcc_offset<libmcc::s_game_globals_states> game_globals_states = _mcc_offset_game_globals_states;
 	s_mcc_offset<libmcc::s_game_globals*> game_globals = _mcc_offset_game_globals;
 	s_mcc_offset<void> set_player_input = _mcc_offset_set_player_input;
+	s_mcc_offset<void> get_player_index_by_xuid = _mcc_offset_get_player_index_by_xuid;
 };
 
 constexpr s_mcc_offset_map g_mcc_offset_map;
@@ -39,9 +41,11 @@ constexpr uintptr_t g_mcc_offset_table[k_mcc_type_count][k_mcc_offset_count]
 	libmcc::mcc::s_data_offset_table::game_globals_states.first,
 	libmcc::mcc::s_data_offset_table::p_game_globals.first,
 	libmcc::mcc::s_function_offset_table::set_player_gamepad.first,
+	0x38A09C, // get_player_index_by_xuid
 }, {
 	libmcc::mccwinstore::s_data_offset_table::game_manager.first,
 	libmcc::mccwinstore::s_data_offset_table::game_globals_states.first,
 	libmcc::mccwinstore::s_data_offset_table::p_game_globals.first,
-	libmcc::mccwinstore::s_function_offset_table::set_player_gamepad.first
+	libmcc::mccwinstore::s_function_offset_table::set_player_gamepad.first,
+	0x374164, // get_player_index_by_xuid
 }};

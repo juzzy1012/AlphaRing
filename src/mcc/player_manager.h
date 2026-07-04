@@ -47,6 +47,16 @@ public:
 	inline libmcc::XUID get_xuid(int player) { return m_xuids[player]; }
 	inline s_player_profiles* get_profile(int player) {return m_profiles + player;}
 
+	// returns the local player index owning the given splitscreen xuid, 0 if it belongs to the host user
+	inline int get_player_index_by_xuid(libmcc::XUID xuid) {
+		for (int i = 1; i < m_local_player_count; i++) {
+			if (m_xuids[i] == xuid) {
+				return i;
+			}
+		}
+		return 0;
+	}
+
 	inline int get_local_player_count() { return m_local_player_count; }
 	inline void set_local_player_count(int count) { m_local_player_count = count; }
 
@@ -56,7 +66,7 @@ public:
 private:
 	int m_local_player_count = 1;
 	e_player_input_device m_input_devices[k_player_input_device_count];
-	libmcc::XUID m_xuids[libmcc::k_game_count];
+	libmcc::XUID m_xuids[libmcc::k_local_player_count];
 	s_player_profiles* m_profiles;
 
 	static constexpr size_t k_player_profiles_size = sizeof(s_player_profiles[libmcc::k_local_player_count]);
