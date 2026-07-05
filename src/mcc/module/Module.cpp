@@ -19,15 +19,6 @@ namespace MCC::Module {
         return ppOriginal_module_unload(info);
     }
 
-    bool AnyGameModuleLoaded() {
-        for (int i = MODULE_HALO1; i < MODULE_MCC; ++i) {
-            auto info = GetSubModule(i)->info();
-            if (info.hModule != 0 && info.errorCode == 0)
-                return true;
-        }
-        return false;
-    }
-
     bool Initialize() {
         bool result;
 

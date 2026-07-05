@@ -5,7 +5,7 @@
 #include "common.h"
 #include "mcc/mcc.h"
 #include "mcc/CGameManager.h"
-#include "mcc/module/Module.h"
+#include "mcc/CGameEngine.h"
 #include "hook/Hook.h"
 #include "global/Global.h"
 #include "input/Input.h"
@@ -869,14 +869,16 @@ namespace AlphaRing::UE::NameplateInjector {
             // widget is an uncatchable fatal. A short grace period avoids
             // forgetting on a one-tick miss. The populated nameplate's presence
             // also replaces the old press-start readiness gate.
-            // A game session is "running" while its DLL is loaded — that covers
-            // loading screens and CUTSCENES, where MCC's in-game flag can flap
-            // for a few ticks. Gating on the flag alone let the clones be
-            // re-created mid-cinematic (populated WBP_Nameplates exist in-game
+            // A game session is "running" while the game ENGINE exists — MCC
+            // creates it at level launch, keeps it through loading screens and
+            // CUTSCENES, and nulls it on exit to the menus. MCC's in-game flag
+            // alone flaps during cinematics; gating on it let the clones be
+            // re-created mid-cutscene (populated WBP_Nameplates exist in-game
             // once splitscreen players join) and then abandoned visible by the
-            // next ForgetClones — the roster appeared to flash. While a module
-            // is loaded the plates have no business existing at all.
-            const bool in_game = MCC::IsInGame() || MCC::Module::AnyGameModuleLoaded();
+            // next ForgetClones — the roster appeared to flash. The game DLL is
+            // NOT a usable signal: it stays loaded in the lobby, where the join
+            // UI must keep working.
+            const bool in_game = MCC::IsInGame() || GameEngine() != nullptr;
 
             static int s_menu_miss = 0;
             Object real = in_game ? Object() : FindPopulatedNameplate();
