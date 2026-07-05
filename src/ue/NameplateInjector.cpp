@@ -6,6 +6,7 @@
 #include "mcc/mcc.h"
 #include "mcc/CGameManager.h"
 #include "mcc/CGameEngine.h"
+#include "mcc/splitscreen/Splitscreen.h"
 #include "hook/Hook.h"
 #include "global/Global.h"
 #include "input/Input.h"
@@ -1042,6 +1043,7 @@ namespace AlphaRing::UE::NameplateInjector {
             s_last = now;
 
             g_in_hook = true;
+            MCC::Splitscreen::SyncHalo1PlayerCount();
             CoopTick();
             g_in_hook = false;
         }

@@ -7,8 +7,10 @@
 #include "global/Global.h"
 
 #include <offset_mcc.h>
+#include <offset_halo1.h>
 
 #include "../CGameManager.h"
+#include "mcc/module/Module.h"
 
 namespace MCC::Splitscreen {
     DefDetourFunction(__int64, __fastcall, get_index_by_xuid, void* a1, __int64 xuid) {
@@ -33,6 +35,35 @@ namespace MCC::Splitscreen {
         assertm(result, "MCC:Splitscreen: failed to hook");
 
         return true;
+    }
+
+    // Halo 1 spawns everyone the roster reports, but builds its splitscreen
+    // window layout from an internal local-player counter that stays at 2 —
+    // launching with 3/4 players gave 3/4 bipeds on 2 screens. This counter is
+    // what the old manual "Halo1 page" InputInt wrote during map load; keep it
+    // synced automatically instead. The value must be right while the map
+    // loads (views are built then); changing it mid-mission needs a restart.
+    void SyncHalo1PlayerCount() {
+        auto p_setting = AlphaRing::Global::MCC::Splitscreen();
+
+        if (!p_setting->b_override)
+            return;
+
+        auto info = Module::GetSubModule(Module::MODULE_HALO1)->info();
+
+        if (info.hModule == 0 || info.errorCode != 0)
+            return;
+
+        int count = p_setting->player_count;
+
+        if (count < 1 || count > 4)
+            return;
+
+        auto p_count = (__int16*)(info.hModule + OFFSET_HALO1_PV_PLAYER_COUNT);
+
+        // only touch it once the game has initialized it to something sane
+        if (*p_count >= 1 && *p_count <= 4 && *p_count != count)
+            *p_count = (__int16)count;
     }
 }
 
