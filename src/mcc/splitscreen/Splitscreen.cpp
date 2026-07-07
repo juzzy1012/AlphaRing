@@ -9,6 +9,11 @@
 #include <offset_mcc.h>
 #include <offset_halo1.h>
 
+#include <cstdarg>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+
 #include "../CGameManager.h"
 #include "mcc/module/Module.h"
 
@@ -37,21 +42,64 @@ namespace MCC::Splitscreen {
         return true;
     }
 
+    // Traces to %TEMP%\alpharing_h1sync.txt so a failing run can be diagnosed
+    // from the file alone (the console isn't always visible/kept).
+    static void SyncLog(const char* fmt, ...) {
+        char buffer[256];
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(buffer, sizeof(buffer), fmt, args);
+        va_end(args);
+
+        LOG_INFO("[h1sync] {}", buffer);
+        try {
+            auto path = std::filesystem::temp_directory_path() / "alpharing_h1sync.txt";
+            std::ofstream file(path, std::ios::app);
+            file << GetTickCount64() << " " << buffer << "\n";
+        } catch (...) {}
+    }
+
     // Halo 1 spawns everyone the roster reports, but builds its splitscreen
-    // window layout from an internal local-player counter that stays at 2 —
-    // launching with 3/4 players gave 3/4 bipeds on 2 screens. This counter is
-    // what the old manual "Halo1 page" InputInt wrote during map load; keep it
-    // synced automatically instead. The value must be right while the map
-    // loads (views are built then); changing it mid-mission needs a restart.
+    // window layout from an internal local-player counter — launching with 3/4
+    // players gave 3/4 bipeds on 2 screens. This counter is what the old manual
+    // "Halo1 page" InputInt wrote during map load; keep it synced automatically
+    // instead. The value must be right while the map loads (views are built
+    // then); changing it mid-mission needs a restart. A value of 0 just means
+    // the game hasn't seeded it yet — pre-seeding during load is the point —
+    // but a wild value means the offset doesn't hold the counter on this build,
+    // so leave it alone.
     void SyncHalo1PlayerCount() {
+        static __int64 s_base = 0;
+        static int s_seen = -100;
+
         auto p_setting = AlphaRing::Global::MCC::Splitscreen();
-
-        if (!p_setting->b_override)
-            return;
-
         auto info = Module::GetSubModule(Module::MODULE_HALO1)->info();
 
-        if (info.hModule == 0 || info.errorCode != 0)
+        if (info.hModule == 0 || info.errorCode != 0) {
+            if (s_base) {
+                SyncLog("halo1.dll unloaded");
+                s_base = 0;
+                s_seen = -100;
+            }
+            return;
+        }
+
+        if (info.hModule != s_base) {
+            s_base = info.hModule;
+            s_seen = -100;
+            SyncLog("halo1.dll loaded @ 0x%llx", (unsigned long long)s_base);
+        }
+
+        auto p_count = (__int16*)(info.hModule + OFFSET_HALO1_PV_PLAYER_COUNT);
+        int current = *p_count;
+
+        if (current != s_seen) {
+            SyncLog("counter=%d override=%d players=%d",
+                    current, (int)p_setting->b_override, p_setting->player_count);
+            s_seen = current;
+        }
+
+        if (!p_setting->b_override)
             return;
 
         int count = p_setting->player_count;
@@ -59,11 +107,12 @@ namespace MCC::Splitscreen {
         if (count < 1 || count > 4)
             return;
 
-        auto p_count = (__int16*)(info.hModule + OFFSET_HALO1_PV_PLAYER_COUNT);
+        if (current < 0 || current > 4 || current == count)
+            return;
 
-        // only touch it once the game has initialized it to something sane
-        if (*p_count >= 1 && *p_count <= 4 && *p_count != count)
-            *p_count = (__int16)count;
+        *p_count = (__int16)count;
+        s_seen = count;
+        SyncLog("counter %d -> %d", current, count);
     }
 }
 
