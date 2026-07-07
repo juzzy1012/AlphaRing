@@ -4,6 +4,7 @@
 
 #include "./mcc.h"
 #include "./roster_probe.h"
+#include "./splitscreen/Splitscreen.h"
 #include "global/Global.h"
 #include "input/Input.h"
 
@@ -51,6 +52,11 @@ bool CGameManager::get_xbox_user_id(CGameManager *self, __int64 *pId, wchar_t *p
 
 bool CGameManager::get_key_state(CGameManager *self, DWORD index, input_data_t *p_input) {
     roster_probe::on_get_key_state(_ReturnAddress(), index);
+
+    // game-side per-frame beat: keeps the H1 view counter synced even if the
+    // UE tick stalls during a classic game's map load
+    if (index == 0)
+        MCC::Splitscreen::SyncHalo1PlayerCount("input");
 
     bool result;
     LARGE_INTEGER qpc;

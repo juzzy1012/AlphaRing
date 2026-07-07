@@ -1043,7 +1043,7 @@ namespace AlphaRing::UE::NameplateInjector {
             s_last = now;
 
             g_in_hook = true;
-            MCC::Splitscreen::SyncHalo1PlayerCount();
+            MCC::Splitscreen::SyncHalo1PlayerCount("ue");
             CoopTick();
             g_in_hook = false;
         }

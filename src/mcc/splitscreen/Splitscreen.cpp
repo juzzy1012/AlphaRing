@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 
 #include "../CGameManager.h"
 #include "mcc/module/Module.h"
@@ -68,16 +69,23 @@ namespace MCC::Splitscreen {
     // the game hasn't seeded it yet — pre-seeding during load is the point —
     // but a wild value means the offset doesn't hold the counter on this build,
     // so leave it alone.
-    void SyncHalo1PlayerCount() {
+    void SyncHalo1PlayerCount(const char* source) {
+        static std::mutex s_lock;
         static __int64 s_base = 0;
         static int s_seen = -100;
+
+        // called from both the UE tick and the game's input poll; skipping
+        // under contention is fine, the other caller just did the same work
+        std::unique_lock<std::mutex> lock(s_lock, std::try_to_lock);
+        if (!lock.owns_lock())
+            return;
 
         auto p_setting = AlphaRing::Global::MCC::Splitscreen();
         auto info = Module::GetSubModule(Module::MODULE_HALO1)->info();
 
         if (info.hModule == 0 || info.errorCode != 0) {
             if (s_base) {
-                SyncLog("halo1.dll unloaded");
+                SyncLog("halo1.dll unloaded [%s]", source);
                 s_base = 0;
                 s_seen = -100;
             }
@@ -87,15 +95,15 @@ namespace MCC::Splitscreen {
         if (info.hModule != s_base) {
             s_base = info.hModule;
             s_seen = -100;
-            SyncLog("halo1.dll loaded @ 0x%llx", (unsigned long long)s_base);
+            SyncLog("halo1.dll loaded @ 0x%llx [%s]", (unsigned long long)s_base, source);
         }
 
         auto p_count = (__int16*)(info.hModule + OFFSET_HALO1_PV_PLAYER_COUNT);
         int current = *p_count;
 
         if (current != s_seen) {
-            SyncLog("counter=%d override=%d players=%d",
-                    current, (int)p_setting->b_override, p_setting->player_count);
+            SyncLog("counter=%d override=%d players=%d [%s]",
+                    current, (int)p_setting->b_override, p_setting->player_count, source);
             s_seen = current;
         }
 
@@ -112,7 +120,7 @@ namespace MCC::Splitscreen {
 
         *p_count = (__int16)count;
         s_seen = count;
-        SyncLog("counter %d -> %d", current, count);
+        SyncLog("counter %d -> %d [%s]", current, count, source);
     }
 }
 
