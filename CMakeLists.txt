@@ -1,59 +1,79 @@
-cmake_minimum_required(VERSION 3.5)
-
+cmake_minimum_required(VERSION 3.27)
 project(alpha_ring)
 
-# set defitions
-set(CMAKE_CXX_STANDARD 20)
-set(WRAPPER_NAME WTSAPI32)
+set(CMAKE_CXX_STANDARD 17)
 
-# set compiler options
-if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    add_compile_options("-finput-charset=utf-8" "-fexec-charset=utf-8")
-else()
-    add_compile_options("/utf-8")
+set(VERSION "1.3528.0.0")
+
+set(WRAPPER_NAME "WTSAPI32")
+set(WRAPPER_DLL_NAME "${WRAPPER_NAME}.dll")
+
+set(LIBRARY_LIST
+        minhook imgui lua spdlog tinyxml2
+        utils game
+        Version
+)
+
+include_directories(${CMAKE_SOURCE_DIR}/src)
+
+# json
+include_directories(${CMAKE_SOURCE_DIR}/lib/json/include)
+
+# imgui
+add_library(imgui SHARED IMPORTED)
+include_directories(${CMAKE_SOURCE_DIR}/lib/imgui/inc)
+set_target_properties(imgui PROPERTIES IMPORTED_IMPLIB "${CMAKE_SOURCE_DIR}/lib/imgui/lib/release/imgui.lib")
+
+# lua
+add_library(lua SHARED IMPORTED)
+include_directories(${CMAKE_SOURCE_DIR}/lib/lua/inc)
+set_target_properties(lua PROPERTIES IMPORTED_IMPLIB "${CMAKE_SOURCE_DIR}/lib/lua/lib/release/lua.lib")
+
+# spdlog
+add_library(spdlog SHARED IMPORTED)
+include_directories(${CMAKE_SOURCE_DIR}/lib/spdlog/inc)
+set_target_properties(spdlog PROPERTIES IMPORTED_IMPLIB "${CMAKE_SOURCE_DIR}/lib/spdlog/lib/release/spdlog.lib")
+
+# tinyxml2
+add_library(tinyxml2 SHARED IMPORTED)
+include_directories(${CMAKE_SOURCE_DIR}/lib/tinyxml2/inc)
+set_target_properties(tinyxml2 PROPERTIES IMPORTED_IMPLIB "${CMAKE_SOURCE_DIR}/lib/tinyxml2/lib/release/tinyxml2.lib")
+
+# minhook
+add_library(minhook SHARED IMPORTED)
+include_directories(${CMAKE_SOURCE_DIR}/lib/minhook/inc)
+# set_target_properties(minhook PROPERTIES IMPORTED_IMPLIB "${CMAKE_SOURCE_DIR}/lib/minhook/lib/${CMAKE_BUILD_TYPE}/libMinHook.x64.lib")
+set_target_properties(minhook PROPERTIES IMPORTED_IMPLIB "${CMAKE_SOURCE_DIR}/lib/minhook/lib/release/libMinHook.x64.lib")
+
+# utils
+file(GLOB_RECURSE UTILS_SRC ${CMAKE_SOURCE_DIR}/lib/utils/src/*.cpp)
+include_directories(${CMAKE_SOURCE_DIR}/lib/utils/inc)
+add_library(utils ${UTILS_SRC} "lib/game/inc/1.3495.0.0/offset_groundhog.h" "lib/game/inc/1.3495.0.0/offset_halo1.h" "lib/game/inc/1.3495.0.0/offset_halo2.h" "lib/game/inc/1.3495.0.0/offset_halo3.h" "lib/game/inc/1.3495.0.0/offset_halo3odst.h" "lib/game/inc/1.3495.0.0/offset_halo4.h" "lib/game/inc/1.3495.0.0/offset_haloreach.h" "lib/game/inc/1.3495.0.0/offset_mcc.h")
+
+# game
+file(GLOB_RECURSE GAME_SRC ${CMAKE_SOURCE_DIR}/lib/game/src/*.cpp)
+include_directories(${CMAKE_SOURCE_DIR}/lib/game/inc)
+include_directories(${CMAKE_SOURCE_DIR}/lib/game/inc/${VERSION})
+add_library(game ${GAME_SRC} "lib/game/inc/1.3495.0.0/offset_groundhog.h" "lib/game/inc/1.3495.0.0/offset_halo1.h" "lib/game/inc/1.3495.0.0/offset_halo2.h" "lib/game/inc/1.3495.0.0/offset_halo3.h" "lib/game/inc/1.3495.0.0/offset_halo3odst.h" "lib/game/inc/1.3495.0.0/offset_halo4.h" "lib/game/inc/1.3495.0.0/offset_haloreach.h" "lib/game/inc/1.3495.0.0/offset_mcc.h")
+
+# disable warning c4996
+add_definitions(-D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS)
+add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS)
+
+add_compile_definitions(WRAPPER_DLL_NAME="${WRAPPER_DLL_NAME}")
+add_compile_definitions(GAME_VERSION="${VERSION}")
+
+file(GLOB_RECURSE CORE_SRC ${CMAKE_SOURCE_DIR}/src/*.cpp)
+
+add_library(${WRAPPER_NAME} SHARED ${CORE_SRC} "lib/game/inc/1.3495.0.0/offset_groundhog.h" "lib/game/inc/1.3495.0.0/offset_halo1.h" "lib/game/inc/1.3495.0.0/offset_halo2.h" "lib/game/inc/1.3495.0.0/offset_halo3.h" "lib/game/inc/1.3495.0.0/offset_halo3odst.h" "lib/game/inc/1.3495.0.0/offset_halo4.h" "lib/game/inc/1.3495.0.0/offset_haloreach.h" "lib/game/inc/1.3495.0.0/offset_mcc.h")
+
+target_link_libraries(${WRAPPER_NAME} PUBLIC ${LIBRARY_LIST})
+
+if (MSVC)
+    target_link_options(${WRAPPER_NAME} PUBLIC /DEBUG)
+else ()
+    target_link_options(${WRAPPER_NAME} PUBLIC -g)
 endif()
-add_compile_definitions(WRAPPER_NAME=${WRAPPER_NAME} PROJECT_NAME=${PROJECT_NAME})
 
-# set dependencies directories
-set(SPDLOG_DIR ${CMAKE_SOURCE_DIR}/dep/spdlog)
-set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/dep/imgui)
-set(LIBMCC_DIR ${CMAKE_SOURCE_DIR}/dep/libmcc)
-set(JSON_DIR ${CMAKE_SOURCE_DIR}/dep/json)
-
-# manually add imgui source files
-set(IMGUI_SRC 
-	${IMGUI_DIR}/imgui.cpp
-	${IMGUI_DIR}/imgui_demo.cpp
-	${IMGUI_DIR}/imgui_draw.cpp
-	${IMGUI_DIR}/imgui_tables.cpp
-	${IMGUI_DIR}/imgui_widgets.cpp
-	${IMGUI_DIR}/backends/imgui_impl_win32.cpp
-	${IMGUI_DIR}/backends/imgui_impl_dx11.cpp
-)
-
-add_compile_definitions(IMGUI_DEFINE_MATH_OPERATORS)
-
-add_library(imgui STATIC ${IMGUI_SRC})
-
-# include headers
-include_directories(${SPDLOG_DIR}/include)
-include_directories(${IMGUI_DIR})
-include_directories(${LIBMCC_DIR}/include)
-include_directories(${JSON_DIR}/single_include)
-
-# add source files
-file(GLOB_RECURSE SRC ${CMAKE_SOURCE_DIR}/src/*.c ${CMAKE_SOURCE_DIR}/src/*.cpp)
-
-# create dll file
-add_library(${WRAPPER_NAME} SHARED ${SRC})
-
-# use cinterface and disable d3d11 helpers
-target_compile_definitions(${WRAPPER_NAME} PUBLIC CINTERFACE D3D11_NO_HELPERS)
-
-# link libraries
-target_link_libraries(${WRAPPER_NAME}
-	dxguid imgui Synchronization
-)
-
-# install 
-install(TARGETS ${WRAPPER_NAME} DESTINATION "$ENV{MCC_DIR}/mcc/binaries/win64")
+install(TARGETS ${WRAPPER_NAME} DESTINATION "${MCC_DIR}/mcc/binaries/win64")
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/res/" DESTINATION "${MCC_DIR}/alpha_ring")
